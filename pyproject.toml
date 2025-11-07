@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "maker-access-control-ui"
+version = "0.1.0"
+description = "Maker Access Control UI for managing card access permissions."
+authors = ["MakeHaven"]
+license = "MIT"
+readme = "README.md"
+packages = [{ include = "maker_access_control_ui", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+quart = "^0.19.6"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.4"
+pytest-asyncio = "^0.25.2"
+
+[tool.poetry.scripts]
+maker-access-control = "maker_access_control_ui.cli:main"
+
+[build-system]
+requires = ["poetry-core>=1.6.0"]
+build-backend = "poetry.core.masonry.api"
