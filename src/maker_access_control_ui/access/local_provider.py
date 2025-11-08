@@ -150,6 +150,51 @@ class LocalProvider:
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to write JSON to %s: %s", path, exc)
 
+    def import_store_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace the current state with ``payload`` coming from a remote store."""
+        if not isinstance(payload, dict):
+            raise ValueError("Payload must be a JSON object.")
+        users_raw = payload.get("users", [])
+        tools_raw = payload.get("tools", [])
+        assignments_raw = payload.get("assignments", [])
+
+        if not isinstance(users_raw, list):
+            raise ValueError("'users' must be a list.")
+        if not isinstance(tools_raw, list):
+            raise ValueError("'tools' must be a list.")
+        if not isinstance(assignments_raw, list):
+            raise ValueError("'assignments' must be a list.")
+
+        normalized_users = [
+            self._normalize_user(entry)
+            for entry in users_raw
+            if isinstance(entry, dict)
+        ]
+        normalized_tools = [
+            self._normalize_tool(entry)
+            for entry in tools_raw
+            if isinstance(entry, dict)
+        ]
+        normalized_assignments: List[Tuple[str, str]] = []
+        for pair in assignments_raw:
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                user_id = str(pair[0]).strip()
+                tool_id = str(pair[1]).strip()
+                if user_id and tool_id:
+                    normalized_assignments.append((user_id, tool_id))
+
+        with self._lock:
+            self._users = normalized_users
+            self._tools = normalized_tools
+            self._assignments = normalized_assignments
+            summary = {
+                "users": len(self._users),
+                "tools": len(self._tools),
+                "assignments": len(self._assignments),
+            }
+            self._persist()
+            return summary
+
     # ------------------------------------------------------------------
     # Query helpers
     # ------------------------------------------------------------------
@@ -373,6 +418,18 @@ class LocalProvider:
         with self._lock:
             for user in self._users:
                 if user.get("card_serial") == card_serial:
+                    return dict(user)
+        return None
+
+    def find_user_by_email(self, email: str) -> Dict[str, Any] | None:
+        """Return a user record matching the given email (case-insensitive)."""
+        needle = (email or "").strip().lower()
+        if not needle:
+            return None
+        with self._lock:
+            for user in self._users:
+                value = (user.get("email") or "").strip().lower()
+                if value and value == needle:
                     return dict(user)
         return None
 

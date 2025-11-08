@@ -1,6 +1,8 @@
 # noqa: D101,D102,D103
 """Maker Access Control UI application."""
 
+import asyncio
+import json
 import logging
 import os
 import re
@@ -8,6 +10,14 @@ import uuid
 from http import HTTPStatus
 from typing import Any
 from typing import Dict
+from urllib.error import HTTPError
+from urllib.error import URLError
+from urllib.parse import parse_qsl
+from urllib.parse import urlencode
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
+from urllib.request import Request
+from urllib.request import urlopen
 
 from quart import Quart
 from quart import Response
@@ -37,12 +47,16 @@ INDEX_HTML = """
     h2 { margin-bottom: 0.75rem; }
     .intro { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 1.5rem; }
     .intro p { margin: 0.35rem 0; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; margin-top: 0.75rem; }
+    .stat { background: #f8f9fa; border-radius: 8px; padding: 0.75rem 1rem; border: 1px solid #e3e6eb; }
+    .stat .label { font-size: 0.85rem; color: #5c677d; }
+    .stat .value { font-size: 1.75rem; font-weight: 600; margin-top: 0.15rem; color: #0b7285; }
     .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
     .tabs button { padding: 0.45rem 1rem; border: none; border-radius: 999px; background: #dee2e6; color: #1f2933; cursor: pointer; font-weight: 600; }
     .tabs button.active { background: #0b7285; color: #fff; }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
-    .grid { display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
+    .grid { display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
     section { background: #fff; border-radius: 8px; padding: 1rem 1.25rem 1.25rem; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); }
     form { display: grid; gap: 0.5rem; margin-bottom: 1rem; }
     form .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
@@ -52,6 +66,9 @@ INDEX_HTML = """
     table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
     th, td { border-bottom: 1px solid #e6e6e6; padding: 0.45rem 0.25rem; text-align: left; vertical-align: top; }
     tr:last-child td { border-bottom: none; }
+    tr.no-assignment { background: #fff4e6; }
+    tr.no-assignment td { border-bottom-color: #f8d7b6; }
+    .badge { display: inline-block; padding: 0.1rem 0.4rem; font-size: 0.75rem; border-radius: 999px; background: #ffe8cc; color: #ad5700; margin-left: 0.35rem; }
     button.action { background: transparent; color: #b00020; border: none; cursor: pointer; padding: 0; font-size: 0.85rem; }
     button.action:hover { text-decoration: underline; }
     .status { margin-bottom: 1rem; min-height: 1.2em; font-weight: 600; }
@@ -66,6 +83,7 @@ INDEX_HTML = """
     .block-label { font-weight: 600; margin-bottom: 0.25rem; display: block; }
     .muted { color: #6b7280; font-size: 0.75rem; display: block; margin-top: 0.15rem; }
     .helper-text { color: #4b5563; font-size: 0.85rem; margin: 0 0 0.75rem; }
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
@@ -73,7 +91,22 @@ INDEX_HTML = """
   <div class="intro">
     <p><strong>What this is:</strong> a lightweight admin surface that replaces Drupal for test environments or simple deployments. It stores data in JSON so you can iterate quickly.</p>
     <p><strong>Persistence:</strong> {{ persistence_note }}</p>
+    <div class="stats">
+      <div class="stat">
+        <div class="label">People</div>
+        <div class="value" id="stat-users">0</div>
+      </div>
+      <div class="stat">
+        <div class="label">Assignments</div>
+        <div class="value" id="stat-assignments">0</div>
+      </div>
+      <div class="stat">
+        <div class="label">Permissions defined</div>
+        <div class="value" id="stat-permissions">0</div>
+      </div>
+    </div>
     <p><strong>Workflow:</strong> 1) add people &amp; assign card serials, 2) register permissions by badge text (IDs/devices fill in automatically), 3) grant access, 4) use the simulator to inspect API responses or swipe behavior.</p>
+    <p><strong>Need data from Drupal?</strong> Visit the <a href="/sync">Sync from Drupal</a> page to pull the latest fallback export. Need to manage the badge catalog? Use the <a href="/permissions">Permissions page</a>.</p>
   </div>
   <nav class="tabs">
     <button type="button" class="tab-button active" data-tab="admin">User &amp; Permission Admin</button>
@@ -121,28 +154,7 @@ INDEX_HTML = """
     </section>
 
     <section>
-      <h2>Permissions</h2>
-      <p class="helper-text">Define the badge or permission text your website checks. Internal IDs are generated automatically.</p>
-      <form id="tool-form">
-        <input type="hidden" name="tool_id" />
-        <label>Permission ID (badge text ID)
-          <input name="permission_id" placeholder="laser" required />
-        </label>
-        <label>Display name
-          <input name="name" placeholder="Laser Cutter" />
-        </label>
-        <button type="submit">Add or Update Permission</button>
-      </form>
-      <table>
-        <thead>
-          <tr><th>Permission</th><th>Display name</th><th></th></tr>
-        </thead>
-        <tbody id="tools-body"></tbody>
-      </table>
-    </section>
-
-    <section>
-      <h2>Permissions</h2>
+      <h2>Permission Assignments</h2>
       <form id="assign-form">
         <div class="row">
           <label>Person
@@ -179,18 +191,29 @@ INDEX_HTML = """
       <p class="helper-text">Need to drive a full swipe (including Home Assistant or ESPHome devices)? Use your existing simulator scripts or call the upstream cardsystem API with a reader + card to validate the full path.</p>
       <form id="permission-form">
         <div class="row">
-          <label>Card serial
-            <select name="card_id" id="permission-card" required></select>
-          </label>
           <label>Permission
             <select name="permission_id" id="permission-select" required></select>
           </label>
         </div>
+        <div class="row">
+          <label>Card serial
+            <select name="card_id" id="permission-card" required></select>
+          </label>
+          <label>Email
+            <select name="email" id="permission-email"></select>
+          </label>
+        </div>
         <button type="submit">Send Request</button>
       </form>
-      <div>
-        <span class="block-label">Request URL</span>
-        <pre id="permission-request" class="empty">No request yet.</pre>
+      <div class="grid">
+        <div>
+          <span class="block-label">Serial request URL</span>
+          <pre id="permission-request-card" class="empty">No request yet.</pre>
+        </div>
+        <div>
+          <span class="block-label">Email request URL</span>
+          <pre id="permission-request-email" class="empty">No request yet.</pre>
+        </div>
       </div>
       <div>
         <span class="block-label">Response (HTTP <span id="permission-status-code">-</span>)</span>
@@ -205,28 +228,36 @@ INDEX_HTML = """
     const statusEl = document.getElementById('status');
     const simStatusEl = document.getElementById('sim-status');
     const usersBody = document.getElementById('users-body');
-    const toolsBody = document.getElementById('tools-body');
     const assignBody = document.getElementById('assign-body');
     const assignUserSelect = document.getElementById('assign-user');
     const assignToolSelect = document.getElementById('assign-tool');
     const filterUser = document.getElementById('filter-user');
     const filterTool = document.getElementById('filter-tool');
     const permissionCardSelect = document.getElementById('permission-card');
+    const permissionEmailSelect = document.getElementById('permission-email');
+    const permissionModeSelect = document.getElementById('permission-mode');
     const permissionSelect = document.getElementById('permission-select');
-    const permissionRequest = document.getElementById('permission-request');
+    const permissionRequestCard = document.getElementById('permission-request-card');
+    const permissionRequestEmail = document.getElementById('permission-request-email');
     const permissionResponse = document.getElementById('permission-response');
     const permissionStatusCode = document.getElementById('permission-status-code');
     const tabButtons = document.querySelectorAll('.tab-button');
     const tabPanels = document.querySelectorAll('.tab-panel');
     const userForm = document.getElementById('user-form');
-    const toolForm = document.getElementById('tool-form');
     const assignForm = document.getElementById('assign-form');
     const permissionForm = document.getElementById('permission-form');
+
+    const statUsers = document.getElementById('stat-users');
+    const statAssignments = document.getElementById('stat-assignments');
+    const statPermissions = document.getElementById('stat-permissions');
 
     let currentState = { users: [], tools: [], assignments: [], permissions: [], meta: {} };
     const permissionTemplateDefault = '/api/v0/serial/{card_serial}/permission/{permission_id}';
     const permissionEndpointTemplateRaw = {{ permission_endpoint_template | tojson }};
     const permissionEndpointTemplate = (permissionEndpointTemplateRaw || permissionTemplateDefault).trim() || permissionTemplateDefault;
+    const permissionEmailTemplateDefault = '/api/v0/email/{email}/permission/{permission_id}';
+    const permissionEndpointEmailTemplateRaw = {{ permission_endpoint_email_template | tojson }};
+    const permissionEmailTemplate = (permissionEndpointEmailTemplateRaw || permissionEmailTemplateDefault).trim() || permissionEmailTemplateDefault;
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message || '';
@@ -249,6 +280,29 @@ INDEX_HTML = """
     function clearPre(element, placeholder) {
       element.classList.add('empty');
       element.textContent = placeholder;
+    }
+
+    function setPre(element, text) {
+      if (!element) {
+        return;
+      }
+      element.classList.remove('empty');
+      element.textContent = text;
+    }
+
+    function updateStats() {
+      if (statUsers) {
+        statUsers.textContent = String(currentState.users.length || 0);
+      }
+      if (statAssignments) {
+        statAssignments.textContent = String(currentState.assignments.length || 0);
+      }
+      if (statPermissions) {
+        const uniquePermissions = new Set(
+          (currentState.tools || []).map((tool) => (tool.badge_name || tool.id || '').toLowerCase()).filter(Boolean)
+        );
+        statPermissions.textContent = String(uniquePermissions.size);
+      }
     }
 
     function slugify(value) {
@@ -350,14 +404,90 @@ INDEX_HTML = """
         .filter(Boolean);
     }
 
-    function buildPermissionRequest(cardSerial, permissionId) {
+    function buildEmailOptions() {
+      return currentState.users
+        .map((user) => {
+          if (!user.email) {
+            return null;
+          }
+          const parts = [user.email];
+          const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
+          if (name) {
+            parts.push(name);
+          }
+          if (user.card_serial) {
+            parts.push(user.card_serial);
+          }
+          return { value: user.email, label: parts.join(' · ') };
+        })
+        .filter(Boolean);
+    }
+
+    function findUserByCard(cardSerial) {
       const normalizedCard = (cardSerial || '').toLowerCase();
-      const selectedUser = currentState.users.find(
+      return currentState.users.find(
         (user) => (user.card_serial || '').toLowerCase() === normalizedCard,
       );
+    }
+
+    function findUserByEmail(email) {
+      const normalizedEmail = (email || '').toLowerCase();
+      return currentState.users.find(
+        (user) => (user.email || '').toLowerCase() === normalizedEmail,
+      );
+    }
+
+    function getPermissionMode() {
+      return permissionModeSelect ? (permissionModeSelect.value || 'card') : 'card';
+    }
+
+    function togglePermissionSources() {
+      const mode = getPermissionMode();
+      const cardContainer = document.querySelector('[data-source="card"]');
+      const emailContainer = document.querySelector('[data-source="email"]');
+      if (cardContainer) {
+        cardContainer.classList.toggle('hidden', mode !== 'card');
+      }
+      if (emailContainer) {
+        emailContainer.classList.toggle('hidden', mode !== 'email');
+      }
+      if (permissionCardSelect) {
+        permissionCardSelect.disabled = mode !== 'card';
+        permissionCardSelect.required = mode === 'card';
+      }
+      if (permissionEmailSelect) {
+        permissionEmailSelect.disabled = mode !== 'email';
+        permissionEmailSelect.required = mode === 'email';
+      }
+    }
+
+    function getRequestPreviewElement(mode) {
+      return mode === 'email' ? permissionRequestEmail : permissionRequestCard;
+    }
+
+    function updateRequestPreview(mode, context) {
+      const target = getRequestPreviewElement(mode);
+      if (!target) {
+        return;
+      }
+      if (!context) {
+        clearPre(target, 'No request yet.');
+        return;
+      }
+      setPre(target, context.url);
+    }
+
+    function buildPermissionRequest({ mode, cardSerial, email, permissionId }) {
+      const selectedUser = mode === 'email'
+        ? findUserByEmail(email)
+        : findUserByCard(cardSerial);
+      const template = mode === 'email' ? permissionEmailTemplate : permissionEndpointTemplate;
+      const resolvedCard = cardSerial || (selectedUser && selectedUser.card_serial) || '';
+      const resolvedEmail = email || (selectedUser && selectedUser.email) || '';
       const replacements = [
-        ['{card_serial}', encodeURIComponent(cardSerial)],
-        ['{card_id}', encodeURIComponent(cardSerial)],
+        ['{card_serial}', encodeURIComponent(resolvedCard)],
+        ['{card_id}', encodeURIComponent(resolvedCard)],
+        ['{email}', encodeURIComponent(resolvedEmail)],
         ['{permission_id}', encodeURIComponent(permissionId)],
         ['{permission}', encodeURIComponent(permissionId)],
       ];
@@ -367,7 +497,7 @@ INDEX_HTML = """
       }
       replacements.push(['{uuid}', uuidValue]);
 
-      let url = permissionEndpointTemplate;
+      let url = template;
       replacements.forEach(([needle, value]) => {
         if (!needle) {
           return;
@@ -377,9 +507,13 @@ INDEX_HTML = """
 
       return {
         url,
-        requiresUuid: permissionEndpointTemplate.includes('{uuid}'),
+        requiresUuid: template.includes('{uuid}'),
         hasUuid: Boolean(uuidValue),
         selectedUser,
+        mode,
+        templateKey: mode === 'email'
+          ? 'MAKER_ACCESS_CONTROL_PERMISSION_ENDPOINT_EMAIL'
+          : 'MAKER_ACCESS_CONTROL_PERMISSION_ENDPOINT',
       };
     }
 
@@ -391,11 +525,11 @@ INDEX_HTML = """
       const data = await res.json();
       currentState = data;
       renderUsers(data.users);
-      renderPermissions(data.tools);
       updateAssignmentOptions();
       updateFilters();
       renderAssignments();
       updatePermissionOptions();
+      updateStats();
     }
 
     function renderUsers(users) {
@@ -404,31 +538,17 @@ INDEX_HTML = """
         return;
       }
       usersBody.innerHTML = users.map((user) => {
+        const hasAssignments = currentState.assignments.some(([userId]) => userId === user.id);
+        const rowClass = hasAssignments ? '' : ' class="no-assignment"';
         const uuid = user.uuid || '';
-        return '<tr>' +
-          '<td>' + (uuid || user.id || '') + '</td>' +
+        const badge = hasAssignments ? '' : '<span class="badge">No access</span>';
+        return '<tr' + rowClass + '>' +
+          '<td>' + (uuid || user.id || '') + badge + '</td>' +
           '<td>' + (user.first_name || '') + '</td>' +
           '<td>' + (user.last_name || '') + '</td>' +
           '<td>' + (user.email || '') + '</td>' +
           '<td>' + (user.card_serial || '') + '</td>' +
           '<td><button class="action" data-action="delete-user" data-id="' + user.id + '">Remove</button></td>' +
-        '</tr>';
-      }).join('');
-    }
-
-    function renderPermissions(tools) {
-      if (!tools.length) {
-        toolsBody.innerHTML = '<tr><td colspan="3" class="empty">No permissions yet</td></tr>';
-        return;
-      }
-      toolsBody.innerHTML = tools.map((tool) => {
-        const permission = tool.badge_name || tool.id || '';
-        const internalId = tool.id ? '<span class="muted">ID: ' + tool.id + '</span>' : '';
-        const displayName = tool.name || '';
-        return '<tr>' +
-          '<td>' + (permission || 'n/a') + internalId + '</td>' +
-          '<td>' + (displayName || '') + '</td>' +
-          '<td><button class="action" data-action="delete-tool" data-id="' + tool.id + '">Remove</button></td>' +
         '</tr>';
       }).join('');
     }
@@ -516,7 +636,14 @@ INDEX_HTML = """
       populateSelect(permissionSelect, options, { emptyLabel: 'No permissions' });
 
       const cardOptions = buildCardOptions();
-      populateSelect(permissionCardSelect, cardOptions, { emptyLabel: 'No cards' });
+      if (permissionCardSelect) {
+        populateSelect(permissionCardSelect, cardOptions, { emptyLabel: 'No cards' });
+      }
+      const emailOptions = buildEmailOptions();
+      if (permissionEmailSelect) {
+        populateSelect(permissionEmailSelect, emailOptions, { emptyLabel: 'No emails' });
+      }
+      togglePermissionSources();
     }
 
     tabButtons.forEach((button) => {
@@ -541,12 +668,6 @@ INDEX_HTML = """
             throw new Error('Failed to remove user');
           }
           setStatus('Removed user ' + target.dataset.id);
-        } else if (action === 'delete-tool') {
-          const res = await fetch('/api/tools/' + encodeURIComponent(target.dataset.id), { method: 'DELETE' });
-          if (!res.ok) {
-            throw new Error('Failed to remove permission');
-          }
-          setStatus('Removed permission ' + target.dataset.id);
         } else if (action === 'delete-assignment') {
           const res = await fetch('/api/assignments/' + encodeURIComponent(target.dataset.user) + '/' + encodeURIComponent(target.dataset.tool), { method: 'DELETE' });
           if (!res.ok) {
@@ -617,53 +738,6 @@ INDEX_HTML = """
       }
     });
 
-    toolForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const form = event.target;
-      const permissionId = form.permission_id.value.trim();
-      const displayName = form.name.value.trim();
-      if (!permissionId) {
-        setStatus('Permission ID is required.', true);
-        return;
-      }
-      const toolIdInput = form.tool_id;
-      let toolId = toolIdInput && toolIdInput.value ? toolIdInput.value.trim() : '';
-      if (!toolId) {
-        const slug = slugify(permissionId);
-        toolId = slug ? 'perm.' + slug : permissionId;
-        if (toolIdInput) {
-          toolIdInput.value = toolId;
-        }
-      }
-      const readerId = toolId;
-      const activatorId = toolId;
-      const payload = {
-        tool_id: toolId,
-        device_id: activatorId || toolId,
-        reader_device_id: readerId,
-        activator_device_id: activatorId,
-        badge_name: permissionId,
-        name: displayName,
-      };
-      try {
-        const res = await fetch('/api/tools', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to save permission');
-        }
-        setStatus('Saved permission ' + (data.badge_name || permissionId));
-        form.reset();
-        await loadState();
-      } catch (error) {
-        console.error(error);
-        setStatus(error.message || 'Unexpected error', true);
-      }
-    });
-
     assignForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const form = event.target;
@@ -697,17 +771,35 @@ INDEX_HTML = """
 
     permissionForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const cardSerial = permissionForm.card_id.value.trim();
-      const permissionId = permissionForm.permission_id.value.trim();
-      if (!cardSerial || !permissionId) {
-        setSimStatus('Select a card and permission before sending.', true);
+      const mode = getPermissionMode();
+      const cardSerial = permissionCardSelect ? permissionCardSelect.value.trim() : '';
+      const emailValue = permissionEmailSelect ? permissionEmailSelect.value.trim() : '';
+      const permissionId = permissionSelect ? permissionSelect.value.trim() : '';
+      if (!permissionId) {
+        setSimStatus('Select a permission before sending.', true);
         return;
       }
-      const requestContext = buildPermissionRequest(cardSerial, permissionId);
+      if (mode === 'card' && !cardSerial) {
+        setSimStatus('Select a card serial before sending.', true);
+        return;
+      }
+      if (mode === 'email' && !emailValue) {
+        setSimStatus('Select an email before sending.', true);
+        return;
+      }
+      const requestContext = buildPermissionRequest({
+        mode,
+        cardSerial,
+        email: emailValue,
+        permissionId,
+      });
+      const activePreview = getRequestPreviewElement(mode);
+      const selectedUser = requestContext.selectedUser;
+      const resolvedCard = cardSerial || (selectedUser && selectedUser.card_serial) || '';
+      const resolvedEmail = emailValue || (selectedUser && selectedUser.email) || '';
       if (requestContext.requiresUuid && !requestContext.hasUuid) {
         permissionStatusCode.textContent = '-';
-        permissionRequest.classList.remove('empty');
-        permissionRequest.textContent = 'Cannot build request: selected user needs a UUID for this endpoint.';
+        setPre(activePreview, 'Cannot build request: selected user needs a UUID for this endpoint.');
         permissionResponse.classList.add('empty');
         permissionResponse.textContent = 'No response yet.';
         setSimStatus('Add a UUID to this user or adjust the permission endpoint template.', true);
@@ -716,15 +808,31 @@ INDEX_HTML = """
       const url = requestContext.url;
       if (/\\{[^}]+\\}/.test(url)) {
         permissionStatusCode.textContent = '-';
-        permissionRequest.classList.remove('empty');
-        permissionRequest.textContent = url;
+        setPre(activePreview, url);
         permissionResponse.classList.add('empty');
         permissionResponse.textContent = 'No response yet.';
-        setSimStatus('Permission endpoint template still contains placeholders. Update MAKER_ACCESS_CONTROL_PERMISSION_ENDPOINT.', true);
+        const variables =
+          requestContext.templateKey === 'MAKER_ACCESS_CONTROL_PERMISSION_ENDPOINT_EMAIL'
+            ? 'MAKER_ACCESS_CONTROL_PERMISSION_ENDPOINT_EMAIL'
+            : 'MAKER_ACCESS_CONTROL_PERMISSION_ENDPOINT';
+        setSimStatus('Permission endpoint template still contains placeholders. Update ' + variables + '.', true);
         return;
       }
-      permissionRequest.classList.remove('empty');
-      permissionRequest.textContent = url;
+      const cardContext =
+        resolvedCard && mode === 'card'
+          ? requestContext
+          : resolvedCard
+            ? buildPermissionRequest({ mode: 'card', cardSerial: resolvedCard, permissionId })
+            : null;
+      const emailContext =
+        resolvedEmail && mode === 'email'
+          ? requestContext
+          : resolvedEmail
+            ? buildPermissionRequest({ mode: 'email', email: resolvedEmail, permissionId })
+            : null;
+      updateRequestPreview('card', cardContext);
+      updateRequestPreview('email', emailContext);
+
       permissionResponse.classList.remove('empty');
       permissionResponse.textContent = 'Loading...';
       permissionStatusCode.textContent = '...';
@@ -758,9 +866,12 @@ INDEX_HTML = """
     filterUser.addEventListener('change', renderAssignments);
     filterTool.addEventListener('change', renderAssignments);
 
-    clearPre(permissionRequest, 'No request yet.');
+    clearPre(permissionRequestCard, 'No request yet.');
+    clearPre(permissionRequestEmail, 'No request yet.');
     clearPre(permissionResponse, 'No response yet.');
     permissionStatusCode.textContent = '-';
+
+    togglePermissionSources();
 
     loadState().catch((error) => {
       console.error(error);
@@ -770,6 +881,329 @@ INDEX_HTML = """
 </body>
 </html>
 """  # noqa: B950
+
+SYNC_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Sync from Drupal · Maker Access Control</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: sans-serif; background: #f5f5f5; margin: 0; padding: 1.5rem; color: #222; }
+    a { color: #0b7285; }
+    .card { background: #fff; border-radius: 8px; padding: 1.25rem 1.5rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); max-width: 800px; margin: 0 auto 1.5rem; }
+    h1 { margin-top: 0; }
+    form { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    form label { display: flex; flex-direction: column; font-size: 0.9rem; color: #555; }
+    input[type="url"], input[type="password"], input[type="text"] { padding: 0.5rem 0.6rem; border: 1px solid #ccc; border-radius: 4px; margin-top: 0.35rem; width: 100%; }
+    .remember { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: #555; grid-column: 1 / -1; }
+    button { justify-self: flex-start; padding: 0.5rem 1rem; background: #0b7285; color: #fff; border: none; border-radius: 4px; cursor: pointer; grid-column: 1 / -1; }
+    .status { min-height: 1.2em; margin-top: 0.5rem; font-weight: 600; }
+    .status.error { color: #c92a2a; }
+    .status.success { color: #2f9e44; }
+    .helper-text { color: #4b5563; font-size: 0.9rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Sync from Drupal</h1>
+    <p class="helper-text">Download the cached fallback export from your Drupal site and load it into this lightweight UI. Provide the full URL to <code>/api/v0/access-control/fallback-store</code> plus the shared download code configured in Drupal.</p>
+    <p class="helper-text">Need to manage users and permissions instead? <a href="/">Return to the admin UI</a>.</p>
+    <form id="sync-form">
+      <label>Fallback export URL
+        <input type="url" id="sync-url" name="source_url" placeholder="https://makehaven-website.lndo.site/api/v0/access-control/fallback-store" required />
+      </label>
+      <label>Download code
+        <input type="password" id="sync-code" name="download_code" placeholder="Shared download code" autocomplete="off" />
+      </label>
+      <label class="remember">
+        <input type="checkbox" id="sync-remember" />
+        Remember download code in this browser
+      </label>
+      <button type="submit">Download latest data</button>
+    </form>
+    <p class="status" id="sync-status"></p>
+    <p class="helper-text">Local persistence: {{ persistence_note }}</p>
+  </div>
+  <script>
+    const syncForm = document.getElementById('sync-form');
+    const syncUrlInput = document.getElementById('sync-url');
+    const syncCodeInput = document.getElementById('sync-code');
+    const syncRememberInput = document.getElementById('sync-remember');
+    const syncStatusEl = document.getElementById('sync-status');
+    const syncDefaults = {
+      url: {{ fallback_source_url | tojson }},
+      code: {{ fallback_download_code | tojson }},
+    };
+    const syncStorageKey = 'makerAccessControl.import';
+
+    function setSyncStatus(message, isError = false) {
+      if (!syncStatusEl) {
+        return;
+      }
+      syncStatusEl.textContent = message || '';
+      syncStatusEl.classList.remove('error', 'success');
+      if (!message) {
+        return;
+      }
+      syncStatusEl.classList.add(isError ? 'error' : 'success');
+    }
+
+    function readSyncSettings() {
+      if (!window.localStorage) {
+        return null;
+      }
+      try {
+        const raw = localStorage.getItem(syncStorageKey);
+        if (!raw) {
+          return null;
+        }
+        return JSON.parse(raw);
+      } catch (error) {
+        console.warn('Failed to read sync settings', error);
+        return null;
+      }
+    }
+
+    function applySyncDefaults() {
+      if (!syncForm) {
+        return;
+      }
+      const stored = readSyncSettings();
+      const urlValue = (stored && stored.url) || syncDefaults.url || '';
+      let codeValue = '';
+      if (stored && stored.remember && stored.code) {
+        codeValue = stored.code;
+      } else if (!stored && syncDefaults.code) {
+        codeValue = syncDefaults.code;
+      }
+      syncUrlInput.value = urlValue;
+      syncCodeInput.value = codeValue;
+      syncRememberInput.checked = Boolean(stored && stored.remember && stored.code);
+    }
+
+    function persistSyncSettings(url, code, remember) {
+      if (!window.localStorage) {
+        return;
+      }
+      const payload = { url: url || '' };
+      if (remember && code) {
+        payload.code = code;
+        payload.remember = true;
+      } else if (remember) {
+        payload.remember = true;
+      }
+      try {
+        localStorage.setItem(syncStorageKey, JSON.stringify(payload));
+      } catch (error) {
+        console.warn('Failed to persist sync settings', error);
+      }
+    }
+
+    if (syncForm) {
+      applySyncDefaults();
+      syncForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const urlValue = syncUrlInput.value.trim();
+        const codeValue = syncCodeInput.value.trim();
+        const rememberCode = syncRememberInput.checked;
+        if (!urlValue) {
+          setSyncStatus('Fallback export URL is required.', true);
+          return;
+        }
+        const submitButton = syncForm.querySelector('button[type="submit"]');
+        if (submitButton) {
+          submitButton.disabled = true;
+        }
+        setSyncStatus('Downloading fallback store...');
+        try {
+          const res = await fetch('/api/store/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: urlValue, code: codeValue }),
+          });
+          let data = {};
+          try {
+            data = await res.json();
+          } catch (error) {
+            data = {};
+          }
+          if (!res.ok) {
+            throw new Error(data.error || 'Failed to import fallback store.');
+          }
+          const peopleCount = typeof data.users === 'number' ? data.users : 0;
+          const toolCount = typeof data.tools === 'number' ? data.tools : 0;
+          const assignmentCount = typeof data.assignments === 'number' ? data.assignments : 0;
+          setSyncStatus('Imported ' + peopleCount + ' people, ' + toolCount + ' permissions, ' + assignmentCount + ' assignments.');
+          persistSyncSettings(urlValue, codeValue, rememberCode);
+        } catch (error) {
+          console.error(error);
+          setSyncStatus(error.message || 'Failed to import fallback store.', true);
+        } finally {
+          if (submitButton) {
+            submitButton.disabled = false;
+          }
+        }
+      });
+    }
+  </script>
+</body>
+</html>
+"""
+
+PERMISSIONS_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Permissions · Maker Access Control</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: sans-serif; background: #f5f5f5; margin: 0; padding: 1.5rem; color: #222; }
+    a { color: #0b7285; }
+    .card { background: #fff; border-radius: 8px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); max-width: 960px; margin: 0 auto; }
+    h1 { margin-top: 0; }
+    form { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-bottom: 1.25rem; }
+    form label { display: flex; flex-direction: column; font-size: 0.9rem; color: #555; }
+    input[type="text"] { padding: 0.5rem 0.6rem; border: 1px solid #ccc; border-radius: 4px; margin-top: 0.35rem; width: 100%; }
+    button { justify-self: flex-start; padding: 0.5rem 1rem; background: #0b7285; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+    th, td { border-bottom: 1px solid #e6e6e6; padding: 0.45rem 0.25rem; text-align: left; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    button.action { background: transparent; color: #b00020; border: none; cursor: pointer; padding: 0; font-size: 0.85rem; }
+    button.action:hover { text-decoration: underline; }
+    .status { min-height: 1.2em; margin-bottom: 1rem; font-weight: 600; }
+    .status.error { color: #c92a2a; }
+    .status.success { color: #2f9e44; }
+    .helper-text { color: #4b5563; font-size: 0.9rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Permission Catalog</h1>
+    <p class="helper-text">Define the badge or permission IDs exposed to access points. These values must match Drupal's <code>field_badge_text_id</code>. <a href="/">Back to the admin UI</a>.</p>
+    <form id="perm-form">
+      <label>Permission ID (badge text ID)
+        <input name="permission_id" id="perm-id" placeholder="laser" required />
+      </label>
+      <label>Display name
+        <input name="name" id="perm-name" placeholder="Laser Cutter" />
+      </label>
+      <button type="submit">Add or Update Permission</button>
+    </form>
+    <p class="status" id="perm-status"></p>
+    <table>
+      <thead>
+        <tr><th>Permission ID</th><th>Display Name</th><th>Internal ID</th><th></th></tr>
+      </thead>
+      <tbody id="perm-body">
+        <tr><td colspan="4" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <script>
+    const permForm = document.getElementById('perm-form');
+    const permBody = document.getElementById('perm-body');
+    const permStatus = document.getElementById('perm-status');
+    const permIdInput = document.getElementById('perm-id');
+    const permNameInput = document.getElementById('perm-name');
+
+    function setPermStatus(message, isError = false) {
+      permStatus.textContent = message || '';
+      permStatus.classList.remove('error', 'success');
+      if (!message) {
+        return;
+      }
+      permStatus.classList.add(isError ? 'error' : 'success');
+    }
+
+    async function loadPermissions() {
+      const res = await fetch('/api/state');
+      if (!res.ok) {
+        throw new Error('Unable to fetch permissions');
+      }
+      const data = await res.json();
+      renderPermissions(data.tools || []);
+    }
+
+    function renderPermissions(tools) {
+      if (!tools.length) {
+        permBody.innerHTML = '<tr><td colspan="4" class="empty">No permissions defined yet.</td></tr>';
+        return;
+      }
+      permBody.innerHTML = tools.map((tool) => {
+        const permission = tool.badge_name || tool.id || '';
+        const name = tool.name || '';
+        return '<tr>' +
+          '<td>' + (permission || 'n/a') + '</td>' +
+          '<td>' + (name || '') + '</td>' +
+          '<td>' + (tool.id || '') + '</td>' +
+          '<td><button class="action" data-action="delete" data-id="' + tool.id + '">Remove</button></td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    permBody.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      if (target.dataset.action !== 'delete') {
+        return;
+      }
+      const toolId = target.dataset.id;
+      if (!toolId) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/tools/' + encodeURIComponent(toolId), { method: 'DELETE' });
+        if (!res.ok) {
+          throw new Error('Failed to remove permission');
+        }
+        setPermStatus('Removed permission ' + toolId);
+        await loadPermissions();
+      } catch (error) {
+        console.error(error);
+        setPermStatus(error.message || 'Failed to remove permission.', true);
+      }
+    });
+
+    permForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const permissionId = permIdInput.value.trim();
+      const name = permNameInput.value.trim();
+      if (!permissionId) {
+        setPermStatus('Permission ID is required.', true);
+        return;
+      }
+      try {
+        const res = await fetch('/api/tools', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ permission_id: permissionId, name }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to save permission');
+        }
+        setPermStatus('Saved permission ' + (data.badge_name || data.id || permissionId));
+        permForm.reset();
+        await loadPermissions();
+      } catch (error) {
+        console.error(error);
+        setPermStatus(error.message || 'Failed to save permission.', true);
+      }
+    });
+
+    loadPermissions().catch((error) => {
+      console.error(error);
+      setPermStatus('Failed to load permissions.', true);
+    });
+  </script>
+</body>
+</html>
+"""
 
 
 async def _payload() -> Dict[str, Any]:
@@ -831,6 +1265,47 @@ def _persistence_note() -> str:
     )
 
 
+async def _fetch_fallback_store(source_url: str, download_code: str) -> Dict[str, Any]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, lambda: _fetch_fallback_store_sync(source_url, download_code)
+    )
+
+
+def _fetch_fallback_store_sync(source_url: str, download_code: str) -> Dict[str, Any]:
+    final_url = _build_fallback_url(source_url, download_code)
+    request = Request(final_url, headers={"Accept": "application/json"})
+    if download_code:
+        request.add_header("X-Access-Control-Code", download_code)
+    with urlopen(request, timeout=30) as response:
+        body = response.read()
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ValueError("Fallback export response was not valid JSON.") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Fallback export must be a JSON object.")
+    return payload
+
+
+def _build_fallback_url(source_url: str, download_code: str) -> str:
+    parsed = urlparse(source_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError("Fallback export URL must include a scheme and host.")
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if download_code:
+        query["code"] = download_code
+    parts = list(parsed)
+    parts[4] = urlencode(query)
+    return urlunparse(parts)
+
+
+def _json_error(message: str, status: HTTPStatus = HTTPStatus.BAD_REQUEST) -> Response:
+    response = jsonify({"error": message})
+    response.status_code = status
+    return response
+
+
 @app.get("/")
 async def index() -> str:
     """Render the Maker Access Control UI."""
@@ -838,6 +1313,35 @@ async def index() -> str:
         INDEX_HTML,
         persistence_note=_persistence_note(),
         permission_endpoint_template=CONFIG.PERMISSION_ENDPOINT_TEMPLATE,
+        permission_endpoint_email_template=CONFIG.PERMISSION_ENDPOINT_EMAIL_TEMPLATE,
+        fallback_source_url=CONFIG.FALLBACK_SOURCE_URL,
+        fallback_download_code=CONFIG.FALLBACK_DOWNLOAD_CODE,
+    )
+
+
+@app.get("/sync")
+async def sync_page() -> str:
+    """Render the Drupal sync helper view."""
+    return await render_template_string(
+        SYNC_HTML,
+        persistence_note=_persistence_note(),
+        fallback_source_url=CONFIG.FALLBACK_SOURCE_URL,
+        fallback_download_code=CONFIG.FALLBACK_DOWNLOAD_CODE,
+        permission_endpoint_template=CONFIG.PERMISSION_ENDPOINT_TEMPLATE,
+        permission_endpoint_email_template=CONFIG.PERMISSION_ENDPOINT_EMAIL_TEMPLATE,
+    )
+
+
+@app.get("/permissions")
+async def permissions_page() -> str:
+    """Render the permission catalog editor."""
+    return await render_template_string(
+        PERMISSIONS_HTML,
+        persistence_note=_persistence_note(),
+        permission_endpoint_template=CONFIG.PERMISSION_ENDPOINT_TEMPLATE,
+        permission_endpoint_email_template=CONFIG.PERMISSION_ENDPOINT_EMAIL_TEMPLATE,
+        fallback_source_url=CONFIG.FALLBACK_SOURCE_URL,
+        fallback_download_code=CONFIG.FALLBACK_DOWNLOAD_CODE,
     )
 
 
@@ -854,6 +1358,75 @@ async def api_state() -> Response:
     }
     state["permissions"] = provider.list_permissions()
     return jsonify(state)
+
+
+@app.post("/api/store/import")
+async def api_store_import() -> Response:
+    """Fetch the fallback JSON export from Drupal and load it into the provider."""
+    data = await _payload()
+    source_url = (
+        data.get("url")
+        or data.get("source_url")
+        or data.get("base_url")
+        or CONFIG.FALLBACK_SOURCE_URL
+        or ""
+    ).strip()
+    download_code = (
+        data.get("code")
+        or data.get("download_code")
+        or data.get("fallback_code")
+        or CONFIG.FALLBACK_DOWNLOAD_CODE
+        or ""
+    ).strip()
+
+    if not source_url:
+        return _json_error("Fallback export URL is required.", HTTPStatus.BAD_REQUEST)
+
+    try:
+        payload = await _fetch_fallback_store(source_url, download_code)
+    except HTTPError as error:
+        message = f"Remote server returned HTTP {error.code}."
+        try:
+            detail = error.read().decode("utf-8")  # type: ignore[attr-defined]
+            if detail:
+                message = f"{message} {detail}"
+        except Exception:  # noqa: BLE001
+            pass
+        return _json_error(message, HTTPStatus.BAD_GATEWAY)
+    except URLError as error:
+        return _json_error(f"Unable to reach remote host: {error.reason}", HTTPStatus.BAD_GATEWAY)
+    except ValueError as error:
+        return _json_error(str(error), HTTPStatus.BAD_GATEWAY)
+    except Exception as error:  # noqa: BLE001
+        logger.exception("Unexpected error downloading fallback export: %s", error)
+        return _json_error("Unexpected error downloading fallback export.", HTTPStatus.BAD_GATEWAY)
+
+    provider: AccessProvider = get_provider()
+    importer = getattr(provider, "import_store_payload", None)
+    if not callable(importer):
+        return _json_error(
+            "The active access provider does not support remote imports.",
+            HTTPStatus.CONFLICT,
+        )
+
+    try:
+        summary = importer(payload)
+    except ValueError as error:
+        return _json_error(str(error), HTTPStatus.BAD_REQUEST)
+    except Exception as error:  # noqa: BLE001
+        logger.exception("Unable to import fallback store payload: %s", error)
+        return _json_error("Unable to import fallback store payload.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    response = jsonify(
+        {
+            "source_url": source_url,
+            "users": summary.get("users", 0),
+            "tools": summary.get("tools", 0),
+            "assignments": summary.get("assignments", 0),
+        }
+    )
+    response.status_code = HTTPStatus.OK
+    return response
 
 
 @app.post("/api/users")
@@ -1045,13 +1618,32 @@ async def api_simulator_permission() -> Response:
     """Simulate the Drupal permission endpoint using the local provider."""
     payload = await request.get_json(force=True)
     card_id = (payload or {}).get("card_id", "").strip()
+    email = (payload or {}).get("email", "").strip()
     permission_id = (payload or {}).get("permission_id", "").strip()
+    mode = ((payload or {}).get("mode", "card") or "card").strip().lower()
+    if mode not in {"card", "email"}:
+        body = {"error": "mode must be 'card' or 'email'."}
+        return (
+            jsonify(
+                {
+                    "request": {"method": "GET", "url": f"/api/v0/serial/{card_id}/permission/{permission_id}"},
+                    "response": {"status": HTTPStatus.BAD_REQUEST, "body": body},
+                }
+            ),
+            HTTPStatus.BAD_REQUEST,
+        )
 
-    request_url = f"/api/v0/serial/{card_id}/permission/{permission_id}"
+    identifier = card_id if mode == "card" else email
+    request_url = (
+        f"/api/v0/serial/{identifier}/permission/{permission_id}"
+        if mode == "card"
+        else f"/api/v0/email/{identifier}/permission/{permission_id}"
+    )
     provider: AccessProvider = get_provider()
 
-    if not card_id or not permission_id:
-        body = {"error": "card_id and permission_id are required"}
+    if not identifier or not permission_id:
+        missing = "email" if mode == "email" else "card_id"
+        body = {"error": f"{missing} and permission_id are required"}
         return (
             jsonify(
                 {
@@ -1062,28 +1654,27 @@ async def api_simulator_permission() -> Response:
             HTTPStatus.BAD_REQUEST,
         )
 
-    tool = provider.find_tool_by_badge(permission_id)
-    if not tool:
-        body = {"error": f"permission '{permission_id}' not found"}
-        return (
-            jsonify(
-                {
-                    "request": {"method": "GET", "url": request_url},
-                    "response": {"status": HTTPStatus.NOT_FOUND, "body": body},
-                }
-            ),
-            HTTPStatus.NOT_FOUND,
-        )
-
-    device_id = tool.get("device_id") or tool.get("activator_device_id") or ""
-    has_access = provider.check_access(card_id, device_id)
-
-    if has_access:
-        status = HTTPStatus.OK
-        body = [{"access": "true", "permission": permission_id}]
+    if mode == "card":
+        user = provider.find_user_by_card(identifier)
     else:
-        status = HTTPStatus.FORBIDDEN
-        body = {"error": "permission denied"}
+        user = provider.find_user_by_email(identifier)
+
+    person, tool, error_body, error_status = _resolve_permission_and_user(
+        provider=provider,
+        user=user,
+        permission_id=permission_id,
+    )
+    if person is None:
+        status = int(error_status or HTTPStatus.BAD_REQUEST)
+        body = error_body or {"error": "Permission context unavailable."}
+    else:
+        has_access = provider.has_permission(person["id"], permission_id)
+        if has_access:
+            status = HTTPStatus.OK
+            body = [_format_permission_result(person, permission_id, True)]
+        else:
+            status = HTTPStatus.FORBIDDEN
+            body = {"error": "permission denied"}
 
     return (
         jsonify(
@@ -1138,6 +1729,28 @@ async def api_user_by_uuid(user_uuid: str) -> Response:
     return response
 
 
+@app.get("/api/v0/email/<path:email>/user")
+async def api_user_by_email(email: str) -> Response:
+    """Return the Maker provider user with the given email address."""
+    provider: AccessProvider = get_provider()
+    user = provider.find_user_by_email(email)
+    if not user:
+        response = jsonify({"error": "User not found for email."})
+        response.status_code = HTTPStatus.NOT_FOUND
+        return response
+    payload = {
+        "first_name": user.get("first_name", ""),
+        "last_name": user.get("last_name", ""),
+        "uuid": user.get("uuid", ""),
+        "card_serial": user.get("card_serial", ""),
+        "email": user.get("email", ""),
+        "access": "Active",
+    }
+    response = jsonify(payload)
+    response.status_code = HTTPStatus.OK
+    return response
+
+
 def _permission_response(
     user: Dict[str, Any], permission_id: str, granted: bool
 ) -> Response:
@@ -1181,6 +1794,30 @@ async def api_permission_by_uuid(user_uuid: str, permission_id: str) -> Response
     """Return permission info for a user UUID."""
     provider: AccessProvider = get_provider()
     user = provider.find_user_by_uuid(user_uuid)
+    person, _tool, error_body, error_status = _resolve_permission_and_user(
+        provider=provider,
+        user=user,
+        permission_id=permission_id,
+    )
+    if person is None:
+        if error_body is None or error_status is None:
+            fallback = jsonify({"error": "Permission context unavailable."})
+            fallback.status_code = HTTPStatus.INTERNAL_SERVER_ERROR
+            return fallback
+        response = jsonify(error_body)
+        response.status_code = int(error_status)
+        return response
+    granted = provider.has_permission(person["id"], permission_id)
+    if granted:
+        return _permission_response(person, permission_id, True)
+    return _permission_response(person, permission_id, False)
+
+
+@app.get("/api/v0/email/<path:email>/permission/<permission_id>")
+async def api_permission_by_email(email: str, permission_id: str) -> Response:
+    """Return permission info for a user identified by email."""
+    provider: AccessProvider = get_provider()
+    user = provider.find_user_by_email(email)
     person, _tool, error_body, error_status = _resolve_permission_and_user(
         provider=provider,
         user=user,

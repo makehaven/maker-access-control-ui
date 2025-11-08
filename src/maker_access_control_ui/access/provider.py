@@ -56,6 +56,12 @@ class AccessProvider(Protocol):
         """Return a person matched by card serial."""
         ...
 
+    def find_user_by_email(
+        self, email: str
+    ) -> dict[str, Any] | None:  # noqa: D102
+        """Return a person matched by email."""
+        ...
+
     def find_user_by_uuid(self, user_uuid: str) -> dict[str, Any] | None:  # noqa: D102
         """Return a person matched by UUID."""
         ...
@@ -110,6 +116,10 @@ class AccessProvider(Protocol):
         ...
 
     def delete_tool(self, tool_id: str) -> None:  # noqa: D102
+        ...
+
+    def import_store_payload(self, payload: dict[str, Any]) -> dict[str, Any]:  # noqa: D102
+        """Replace provider state using a combined JSON payload."""
         ...
 
 

@@ -25,6 +25,7 @@ SEED_DATA = {
             "first_name": "Alice",
             "last_name": "Anderson",
             "uuid": "11111111-1111-1111-1111-111111111111",
+            "email": "alice@example.com",
         },
         {
             "id": "u.bob",
@@ -32,6 +33,7 @@ SEED_DATA = {
             "first_name": "Bob",
             "last_name": "Baker",
             "uuid": "22222222-2222-2222-2222-222222222222",
+            "email": "bob@example.com",
         },
     ],
     "tools": [
@@ -163,6 +165,12 @@ async def test_permission_endpoint_grants_access(client: QuartClient):
     assert payload[0]["access"] == "true"
     assert payload[0]["permission"] == "tool_a"
 
+    res_email = await client.get("/api/v0/email/alice@example.com/permission/tool_a")
+    assert res_email.status_code == 200
+    payload_email = await res_email.get_json()
+    assert payload_email[0]["access"] == "true"
+    assert payload_email[0]["permission"] == "tool_a"
+
 
 async def test_permission_endpoint_denies_access(client: QuartClient):
     """Permission endpoint denies unauthorized access."""
@@ -186,6 +194,11 @@ async def test_user_info_endpoint(client: QuartClient):
     assert res_uuid.status_code == 200
     payload_uuid = await res_uuid.get_json()
     assert payload_uuid[0]["permission"] == "tool_a"
+
+    res_email = await client.get("/api/v0/email/alice@example.com/user")
+    assert res_email.status_code == 200
+    payload_email = await res_email.get_json()
+    assert payload_email["email"] == "alice@example.com"
 
 
 async def test_user_creation_generates_uuid_when_missing_id(client: QuartClient):
@@ -224,3 +237,12 @@ async def test_simulator_permission_flow(client: QuartClient):
     assert payload["request"]["url"].endswith("permission/tool_a")
     assert payload["response"]["status"] == 200
     assert payload["response"]["body"][0]["access"] == "true"
+
+    res_email = await client.post(
+        "/api/simulator/permission",
+        json={"mode": "email", "email": "alice@example.com", "permission_id": "tool_a"},
+    )
+    assert res_email.status_code == 200
+    payload_email = await res_email.get_json()
+    assert payload_email["response"]["status"] == 200
+    assert payload_email["response"]["body"][0]["access"] == "true"

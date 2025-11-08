@@ -29,6 +29,13 @@ class Config:
     PERMISSION_ENDPOINT_TEMPLATE: str = field(
         default="/api/v0/serial/{card_serial}/permission/{permission_id}"
     )
+    PERMISSION_ENDPOINT_EMAIL_TEMPLATE: str = field(
+        default="/api/v0/email/{email}/permission/{permission_id}"
+    )
+    FALLBACK_SOURCE_URL: str = field(
+        default="https://makehaven-website.lndo.site/api/v0/access-control/fallback-store"
+    )
+    FALLBACK_DOWNLOAD_CODE: str = field(default="")
 
 
 def load_config() -> Config:
@@ -48,9 +55,30 @@ def load_config() -> Config:
         default=permission_default,
     )
 
+    permission_email_default = "/api/v0/email/{email}/permission/{permission_id}"
+    permission_email_template = _env_or_default(
+        "MAKER_ACCESS_CONTROL_PERMISSION_ENDPOINT_EMAIL",
+        default=permission_email_default,
+    )
+
+    fallback_url = _env_or_default(
+        "MAKER_ACCESS_CONTROL_FALLBACK_URL",
+        "CARDSYS_FALLBACK_URL",
+        default="https://makehaven-website.lndo.site/api/v0/access-control/fallback-store",
+    )
+    fallback_code = _env_or_default(
+        "MAKER_ACCESS_CONTROL_FALLBACK_CODE",
+        "CARDSYS_FALLBACK_CODE",
+        default="",
+    )
+
     return Config(
         ACCESS_PROVIDER=provider,
         PERMISSION_ENDPOINT_TEMPLATE=permission_template or permission_default,
+        PERMISSION_ENDPOINT_EMAIL_TEMPLATE=permission_email_template
+        or permission_email_default,
+        FALLBACK_SOURCE_URL=fallback_url,
+        FALLBACK_DOWNLOAD_CODE=fallback_code,
     )
 
 
