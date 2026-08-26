@@ -6,18 +6,14 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
+from urllib.parse import quote
 from http import HTTPStatus
 from typing import Any
 from typing import Dict
 from urllib.error import HTTPError
 from urllib.error import URLError
-from urllib.parse import parse_qsl
-from urllib.parse import urlencode
-from urllib.parse import urlparse
-from urllib.parse import urlunparse
-from urllib.request import Request
-from urllib.request import urlopen
 
 from quart import Quart
 from quart import Response
@@ -29,6 +25,9 @@ from markupsafe import Markup
 from maker_access_control_ui.access.provider import AccessProvider
 from maker_access_control_ui.access.provider import get_provider
 from maker_access_control_ui.config import CONFIG
+from maker_access_control_ui import logforward as logforward_service
+from maker_access_control_ui import proxy as proxy_service
+from maker_access_control_ui import sync as sync_service
 
 
 app = Quart(__name__)
@@ -1273,31 +1272,22 @@ async def _fetch_fallback_store(source_url: str, download_code: str) -> Dict[str
 
 
 def _fetch_fallback_store_sync(source_url: str, download_code: str) -> Dict[str, Any]:
-    final_url = _build_fallback_url(source_url, download_code)
-    request = Request(final_url, headers={"Accept": "application/json"})
-    if download_code:
-        request.add_header("X-Access-Control-Code", download_code)
-    with urlopen(request, timeout=30) as response:
-        body = response.read()
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError as error:
-        raise ValueError("Fallback export response was not valid JSON.") from error
-    if not isinstance(payload, dict):
-        raise ValueError("Fallback export must be a JSON object.")
+    """Download the export for the manual UI path.
+
+    Delegates to :mod:`maker_access_control_ui.sync` so the manual button and
+    the unattended loop cannot drift apart in how they build the URL, present
+    the shared code, or parse the response.
+    """
+    payload, _etag = sync_service.fetch_fallback_store_sync(
+        source_url, download_code, timeout=CONFIG.SYNC_TIMEOUT_SECONDS
+    )
+    if payload is sync_service.UNCHANGED:  # pragma: no cover - no ETag sent here
+        raise ValueError("Fallback export reported no change without a prior ETag.")
     return payload
 
 
 def _build_fallback_url(source_url: str, download_code: str) -> str:
-    parsed = urlparse(source_url)
-    if not parsed.scheme or not parsed.netloc:
-        raise ValueError("Fallback export URL must include a scheme and host.")
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    if download_code:
-        query["code"] = download_code
-    parts = list(parsed)
-    parts[4] = urlencode(query)
-    return urlunparse(parts)
+    return sync_service.build_fallback_url(source_url, download_code)
 
 
 def _json_error(message: str, status: HTTPStatus = HTTPStatus.BAD_REQUEST) -> Response:
@@ -1343,6 +1333,48 @@ async def permissions_page() -> str:
         fallback_source_url=CONFIG.FALLBACK_SOURCE_URL,
         fallback_download_code=CONFIG.FALLBACK_DOWNLOAD_CODE,
     )
+
+
+@app.get("/health")
+async def health() -> Response:
+    """Report whether this box is still fit to make access decisions.
+
+    Answers 200 while the store is fresh enough to trust and 503 once it is
+    not, so an uptime monitor can page on the failure that matters most: a box
+    that is happily answering from data that stopped being refreshed.
+    """
+    body, status = sync_service.health_report()
+    response = jsonify(body)
+    response.status_code = status
+    return response
+
+
+@app.post("/api/sync/run")
+async def api_sync_run() -> Response:
+    """Run one synchronisation immediately, for operators and for tests."""
+    data = await _payload()
+    force = str(data.get("force") or "").strip().lower() in {"1", "true", "yes", "on"}
+    result = await sync_service.run_sync_once(force=force)
+    response = jsonify(result)
+    response.status_code = (
+        HTTPStatus.OK
+        if result.get("status") in {"ok", "unchanged"}
+        else HTTPStatus.BAD_GATEWAY
+    )
+    return response
+
+
+@app.post("/api/log-forward/drain")
+async def api_log_forward_drain() -> Response:
+    """Drain one batch of forwarded decisions immediately."""
+    result = await logforward_service.drain_once()
+    response = jsonify(result)
+    response.status_code = (
+        HTTPStatus.OK
+        if result.get("status") in {"ok", "empty", "disabled"}
+        else HTTPStatus.BAD_GATEWAY
+    )
+    return response
 
 
 @app.get("/api/state")
@@ -1409,6 +1441,25 @@ async def api_store_import() -> Response:
             HTTPStatus.CONFLICT,
         )
 
+    # The same floors the unattended loop enforces: a well-formed but
+    # half-empty export must not be allowed to revoke the membership, whether
+    # a timer or a person pressed the button.  ``force`` exists for the
+    # legitimate small-store cases (a fresh dev site) and says so out loud.
+    force = str(data.get("force") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not force:
+        try:
+            sync_service.validate_payload(
+                payload,
+                len(provider.list_people()),
+                min_users=CONFIG.SYNC_MIN_USERS,
+                max_shrink_ratio=CONFIG.SYNC_MAX_SHRINK_RATIO,
+            )
+        except sync_service.PayloadRejected as error:
+            return _json_error(
+                f"{error} Send \"force\": true to install it anyway.",
+                HTTPStatus.CONFLICT,
+            )
+
     try:
         summary = importer(payload)
     except ValueError as error:
@@ -1416,6 +1467,19 @@ async def api_store_import() -> Response:
     except Exception as error:  # noqa: BLE001
         logger.exception("Unable to import fallback store payload: %s", error)
         return _json_error("Unable to import fallback store payload.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    # A hand-loaded store is still a synced store; recording it keeps /health
+    # honest instead of reporting an unknown age on a box that was just filled.
+    generated_at = payload.get("generated_at")
+    sync_service.STATE.source_url = source_url
+    sync_service.STATE.record_success(
+        summary,
+        None,
+        generated_at if isinstance(generated_at, str) else None,
+        changed=True,
+        now=time.time(),
+    )
+    sync_service.save_state()
 
     response = jsonify(
         {
@@ -1687,12 +1751,50 @@ async def api_simulator_permission() -> Response:
     )
 
 
+@app.route("/user/login", methods=["GET", "POST"])
+async def drupal_login_shim() -> Response:
+    """Complete Drupal's form-login handshake for cardsystem clients.
+
+    cardsystem's ``DrupalClient.__aenter__`` POSTs credentials to
+    ``BADGE_PERMISSION_LOGIN_URL`` and calls ``raise_for_status()`` before it
+    will issue any lookup. Without a 200 here the client raises
+    ``HTTPStatusError``, ``fetch_user_info`` swallows it and returns ``None``,
+    and every badge tap fails closed with "no user found" -- even though the
+    lookup endpoints themselves work.
+
+    The box does not authenticate its callers (it is LAN-only, reached from a
+    fixed set of devices), so this only has to complete the handshake. Any
+    credentials presented are accepted and discarded.
+    """
+    if request.method == "POST":
+        await request.form
+    response = jsonify({"status": "ok", "note": "login accepted (box is LAN-only)"})
+    response.status_code = HTTPStatus.OK
+    return response
+
+
+async def _proxied(path: str, reason: str) -> Response | None:
+    """Return Drupal's answer for ``path``, or ``None`` to keep the local one."""
+    result = await proxy_service.maybe_proxy(path, reason)
+    if result is None:
+        return None
+    status, body = result
+    response = jsonify(body)
+    response.status_code = status
+    return response
+
+
 @app.get("/api/v0/serial/<card_serial>/user")
 async def api_user_by_serial(card_serial: str) -> Response:
     """Return the Maker provider user with the given card serial."""
     provider: AccessProvider = get_provider()
     user = provider.find_user_by_card(card_serial)
     if not user:
+        proxied = await _proxied(
+            f"/api/v0/serial/{card_serial}/user", proxy_service.REASON_USER_NOT_FOUND
+        )
+        if proxied is not None:
+            return proxied
         response = jsonify({"error": "User not found for serial."})
         response.status_code = HTTPStatus.NOT_FOUND
         return response
@@ -1703,7 +1805,9 @@ async def api_user_by_serial(card_serial: str) -> Response:
         "card_serial": user.get("card_serial", ""),
         "access": "Active",
     }
-    response = jsonify(payload)
+    # Drupal returns an array of one; cardsystem iterates the response, so a
+    # bare object would make it iterate dict keys. Match the array shape.
+    response = jsonify([payload])
     response.status_code = HTTPStatus.OK
     return response
 
@@ -1714,6 +1818,11 @@ async def api_user_by_uuid(user_uuid: str) -> Response:
     provider: AccessProvider = get_provider()
     user = provider.find_user_by_uuid(user_uuid)
     if not user:
+        proxied = await _proxied(
+            f"/api/v0/uuid/{user_uuid}/user", proxy_service.REASON_USER_NOT_FOUND
+        )
+        if proxied is not None:
+            return proxied
         response = jsonify({"error": "User not found for uuid."})
         response.status_code = HTTPStatus.NOT_FOUND
         return response
@@ -1724,7 +1833,9 @@ async def api_user_by_uuid(user_uuid: str) -> Response:
         "card_serial": user.get("card_serial", ""),
         "access": "Active",
     }
-    response = jsonify(payload)
+    # Drupal returns an array of one; cardsystem iterates the response, so a
+    # bare object would make it iterate dict keys. Match the array shape.
+    response = jsonify([payload])
     response.status_code = HTTPStatus.OK
     return response
 
@@ -1735,6 +1846,11 @@ async def api_user_by_email(email: str) -> Response:
     provider: AccessProvider = get_provider()
     user = provider.find_user_by_email(email)
     if not user:
+        proxied = await _proxied(
+            f"/api/v0/email/{quote(email, safe=chr(64))}/user", proxy_service.REASON_USER_NOT_FOUND
+        )
+        if proxied is not None:
+            return proxied
         response = jsonify({"error": "User not found for email."})
         response.status_code = HTTPStatus.NOT_FOUND
         return response
@@ -1746,7 +1862,9 @@ async def api_user_by_email(email: str) -> Response:
         "email": user.get("email", ""),
         "access": "Active",
     }
-    response = jsonify(payload)
+    # Drupal returns an array of one; cardsystem iterates the response, so a
+    # bare object would make it iterate dict keys. Match the array shape.
+    response = jsonify([payload])
     response.status_code = HTTPStatus.OK
     return response
 
@@ -1776,6 +1894,14 @@ async def api_permission_by_serial(card_serial: str, permission_id: str) -> Resp
         permission_id=permission_id,
     )
     if person is None:
+        proxied = await _proxied(
+            f"/api/v0/serial/{card_serial}/permission/{permission_id}",
+            proxy_service.REASON_USER_NOT_FOUND
+            if not user
+            else proxy_service.REASON_UNKNOWN_PERMISSION,
+        )
+        if proxied is not None:
+            return proxied
         if error_body is None or error_status is None:
             fallback = jsonify({"error": "Permission context unavailable."})
             fallback.status_code = HTTPStatus.INTERNAL_SERVER_ERROR
@@ -1785,7 +1911,31 @@ async def api_permission_by_serial(card_serial: str, permission_id: str) -> Resp
         return response
     granted = provider.has_permission(person["id"], permission_id)
     if granted:
+        logforward_service.enqueue(
+            member_uuid=person.get("uuid", ""),
+            permission=permission_id,
+            result=True,
+            method="card",
+        )
         return _permission_response(person, permission_id, True)
+    # A denial is only re-checked upstream when the snapshot is too old to be
+    # believed; trusting a fresh local deny is what keeps the common case fast
+    # and keeps the box useful during an outage.
+    proxied = await _proxied(
+        f"/api/v0/serial/{card_serial}/permission/{permission_id}", proxy_service.REASON_PERMISSION_DENIED
+    )
+    if proxied is not None:
+        # Drupal answered this one, and logged it as it did. Forwarding it
+        # again would double-count the tap in every report built on the
+        # access log.
+        return proxied
+    logforward_service.enqueue(
+        member_uuid=person.get("uuid", ""),
+        permission=permission_id,
+        result=False,
+        note="User does not have the specified permission.",
+        method="card",
+    )
     return _permission_response(person, permission_id, False)
 
 
@@ -1800,6 +1950,14 @@ async def api_permission_by_uuid(user_uuid: str, permission_id: str) -> Response
         permission_id=permission_id,
     )
     if person is None:
+        proxied = await _proxied(
+            f"/api/v0/uuid/{user_uuid}/permission/{permission_id}",
+            proxy_service.REASON_USER_NOT_FOUND
+            if not user
+            else proxy_service.REASON_UNKNOWN_PERMISSION,
+        )
+        if proxied is not None:
+            return proxied
         if error_body is None or error_status is None:
             fallback = jsonify({"error": "Permission context unavailable."})
             fallback.status_code = HTTPStatus.INTERNAL_SERVER_ERROR
@@ -1809,7 +1967,31 @@ async def api_permission_by_uuid(user_uuid: str, permission_id: str) -> Response
         return response
     granted = provider.has_permission(person["id"], permission_id)
     if granted:
+        logforward_service.enqueue(
+            member_uuid=person.get("uuid", ""),
+            permission=permission_id,
+            result=True,
+            method="uuid",
+        )
         return _permission_response(person, permission_id, True)
+    # A denial is only re-checked upstream when the snapshot is too old to be
+    # believed; trusting a fresh local deny is what keeps the common case fast
+    # and keeps the box useful during an outage.
+    proxied = await _proxied(
+        f"/api/v0/uuid/{user_uuid}/permission/{permission_id}", proxy_service.REASON_PERMISSION_DENIED
+    )
+    if proxied is not None:
+        # Drupal answered this one, and logged it as it did. Forwarding it
+        # again would double-count the tap in every report built on the
+        # access log.
+        return proxied
+    logforward_service.enqueue(
+        member_uuid=person.get("uuid", ""),
+        permission=permission_id,
+        result=False,
+        note="User does not have the specified permission.",
+        method="uuid",
+    )
     return _permission_response(person, permission_id, False)
 
 
@@ -1824,6 +2006,14 @@ async def api_permission_by_email(email: str, permission_id: str) -> Response:
         permission_id=permission_id,
     )
     if person is None:
+        proxied = await _proxied(
+            f"/api/v0/email/{quote(email, safe=chr(64))}/permission/{permission_id}",
+            proxy_service.REASON_USER_NOT_FOUND
+            if not user
+            else proxy_service.REASON_UNKNOWN_PERMISSION,
+        )
+        if proxied is not None:
+            return proxied
         if error_body is None or error_status is None:
             fallback = jsonify({"error": "Permission context unavailable."})
             fallback.status_code = HTTPStatus.INTERNAL_SERVER_ERROR
@@ -1833,10 +2023,81 @@ async def api_permission_by_email(email: str, permission_id: str) -> Response:
         return response
     granted = provider.has_permission(person["id"], permission_id)
     if granted:
+        logforward_service.enqueue(
+            member_uuid=person.get("uuid", ""),
+            permission=permission_id,
+            result=True,
+            method="email",
+        )
         return _permission_response(person, permission_id, True)
+    # A denial is only re-checked upstream when the snapshot is too old to be
+    # believed; trusting a fresh local deny is what keeps the common case fast
+    # and keeps the box useful during an outage.
+    proxied = await _proxied(
+        f"/api/v0/email/{quote(email, safe=chr(64))}/permission/{permission_id}", proxy_service.REASON_PERMISSION_DENIED
+    )
+    if proxied is not None:
+        # Drupal answered this one, and logged it as it did. Forwarding it
+        # again would double-count the tap in every report built on the
+        # access log.
+        return proxied
+    logforward_service.enqueue(
+        member_uuid=person.get("uuid", ""),
+        permission=permission_id,
+        result=False,
+        note="User does not have the specified permission.",
+        method="email",
+    )
     return _permission_response(person, permission_id, False)
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)  # noqa: S104
+
+
+# ----------------------------------------------------------------------
+# Background synchronisation lifecycle
+# ----------------------------------------------------------------------
+@app.before_serving
+async def _start_sync() -> None:
+    """Restore sync state and, when enabled, start the unattended loop."""
+    sync_service.load_state()
+    if not CONFIG.SYNC_ENABLED:
+        logger.info(
+            "Unattended sync is disabled; /health will report an unknown "
+            "store age until a store is loaded."
+        )
+        return
+    app.sync_task = asyncio.create_task(sync_service.sync_loop())  # type: ignore[attr-defined]
+
+
+@app.before_serving
+async def _start_log_forward() -> None:
+    """Start draining queued decisions back to Drupal.
+
+    Started independently of the sync loop: a box that can no longer *read*
+    from Drupal may still be able to write to it, and a queue that stopped
+    draining is its own failure with its own signal in ``/health``.
+    """
+    if not CONFIG.LOG_FORWARD_ENABLED:
+        return
+    app.log_forward_task = asyncio.create_task(  # type: ignore[attr-defined]
+        logforward_service.drain_loop()
+    )
+
+
+@app.after_serving
+async def _stop_background_tasks() -> None:
+    """Cancel the background loops so shutdown is not held open by a sleep."""
+    for attr, label in (("sync_task", "Sync loop"), ("log_forward_task", "Log-forward loop")):
+        task = getattr(app, attr, None)
+        if task is None:
+            continue
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            logger.exception("%s raised during shutdown.", label)

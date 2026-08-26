@@ -414,10 +414,21 @@ class LocalProvider:
             return has_access
 
     def find_user_by_card(self, card_serial: str) -> Dict[str, Any] | None:
-        """Return a user record matching the given card serial."""
+        """Return a user record matching the given card serial.
+
+        Matched case-insensitively. Drupal stores serials in MySQL, whose
+        default collation is case-insensitive, and cardsystem uppercases every
+        serial via ``sanitize_card_id`` before the lookup. An exact-match
+        comparison here silently denies every member whose stored serial is
+        not already uppercase.
+        """
+        needle = (card_serial or "").strip().lower()
+        if not needle:
+            return None
         with self._lock:
             for user in self._users:
-                if user.get("card_serial") == card_serial:
+                value = (user.get("card_serial") or "").strip().lower()
+                if value and value == needle:
                     return dict(user)
         return None
 
@@ -434,10 +445,14 @@ class LocalProvider:
         return None
 
     def find_user_by_uuid(self, user_uuid: str) -> Dict[str, Any] | None:
-        """Return a user record matching the given UUID."""
+        """Return a user record matching the given UUID (case-insensitive)."""
+        needle = (user_uuid or "").strip().lower()
+        if not needle:
+            return None
         with self._lock:
             for user in self._users:
-                if user.get("uuid") == user_uuid:
+                value = (user.get("uuid") or "").strip().lower()
+                if value and value == needle:
                     return dict(user)
         return None
 
