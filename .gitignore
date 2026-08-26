@@ -1,2 +1,10 @@
 .fixtures/maker-store.json
 .fixtures/maker-reader-config.json
+
+# Local virtualenv used for running the box and its tests.
+.venv/
+
+# Python bytecode is build output; tracking it made every commit churn.
+__pycache__/
+*.pyc
+.pytest_cache/
