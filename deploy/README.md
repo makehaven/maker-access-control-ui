@@ -51,6 +51,14 @@ curl -s http://<box>:8080/health | python3 -c \
 only grows means Drupal is refusing or unreachable — the decisions are safe on disk,
 but every report built on the access log is going stale until it drains.
 
+Read `last_error` before guessing why. Two cases seen in practice:
+
+- `HTTP 403` — the codes differ. Fix `LOG_FORWARD_CODE` or the Drupal setting.
+- `JSONDecodeError` — Drupal answered something other than JSON. On Pantheon this
+  is what an **unset ingest code** looks like: Drupal returns 503, and Pantheon's
+  edge swaps any origin 503 for the site's front page as HTML 200. Set the code in
+  Drupal; the queue drains on the next interval.
+
 ## Two things that must be true
 
 **LAN-only.** The `/user/login` endpoint is a handshake shim that accepts any

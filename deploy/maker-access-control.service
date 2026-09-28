@@ -3,6 +3,9 @@ Description=Maker Access Control box (local access authority)
 Documentation=https://github.com/makehaven/maker-access-control-ui
 After=network-online.target
 Wants=network-online.target
+# Never let a restart storm trip systemd's rate limiter into giving up; the
+# whole point of this box is to keep answering. (Must live in [Unit].)
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -15,11 +18,9 @@ ExecStart=/opt/maker-access-control/.venv/bin/hypercorn \
     --bind 0.0.0.0:8080 \
     maker_access_control_ui.ui.app:app
 
-# The whole point of this box is to keep answering. Restart forever, and never
-# let a restart storm trip systemd's rate limiter into giving up.
+# Restart forever; the rate-limiter override is in [Unit].
 Restart=always
 RestartSec=3
-StartLimitIntervalSec=0
 
 # The store must survive a reboot: a box that comes back empty denies everyone.
 StateDirectory=maker-access-control
