@@ -305,3 +305,77 @@ async def test_health_exposes_the_queue_depth(client: Any) -> None:
     body = await (await client.get("/health")).get_json()
     assert body["log_forward"]["queue_depth"] == 1
     assert body["log_forward"]["enabled"] is True
+
+
+# ----------------------------------------------------------------------
+# Which device asked, and how (source / method on /admin/access/log)
+# ----------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_the_callers_device_and_method_reach_the_log(client: Any) -> None:
+    """The access log should say front_door / card_reader, not unknown."""
+    response = await client.get(
+        "/api/v0/serial/01020304/permission/tool_a?source=front_door&method=card_reader"
+    )
+    assert response.status_code == 200
+    (event,) = _queued()
+    assert event["source"] == "front_door"
+    assert event["method"] == "card_reader"
+    assert event["note"] == "Answered by local box"
+
+
+@pytest.mark.asyncio
+async def test_without_caller_labels_the_box_says_it_answered(client: Any) -> None:
+    """Today's cardsystem sends nothing; keep the old, separable defaults."""
+    await client.get("/api/v0/serial/01020304/permission/tool_a")
+    (event,) = _queued()
+    assert event["source"] == "local_authority"
+    assert event["method"] == "card"
+    assert event["note"] == "Answered by local box"
+
+
+@pytest.mark.asyncio
+async def test_a_deny_keeps_its_reason_behind_the_box_marker(client: Any) -> None:
+    sync_service.STATE.record_success({"users": 2}, None, None, changed=True, now=time.time())
+    await client.get("/api/v0/serial/A1B2C3D4/permission/tool_b?source=laser_1")
+    (event,) = _queued()
+    assert event["source"] == "laser_1"
+    assert event["note"].startswith("Answered by local box")
+    assert "does not have" in event["note"]
+
+
+@pytest.mark.asyncio
+async def test_caller_labels_are_cleaned(client: Any) -> None:
+    """A label is free text from the LAN; keep it short and plain."""
+    await client.get(
+        "/api/v0/serial/01020304/permission/tool_a?source=<script>front door&method=" + "x" * 200
+    )
+    (event,) = _queued()
+    assert event["source"] == "scriptfrontdoor"
+    assert event["method"] == "x" * 64
+
+
+@pytest.mark.asyncio
+async def test_a_proxied_lookup_carries_the_callers_labels(
+    client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drupal logs proxied taps itself, so it needs the device name too."""
+    seen: list = []
+    monkeypatch.setattr(
+        proxy_service,
+        "CONFIG",
+        replace(
+            proxy_service.CONFIG, PROXY_ENABLED=True, PROXY_BASE_URL="https://drupal.test"
+        ),
+    )
+
+    def fake_fetch(url: str, *a: Any, **k: Any) -> Any:
+        seen.append(url)
+        return (200, [{"access": "true", "permission": "tool_b"}])
+
+    monkeypatch.setattr(proxy_service, "_fetch_sync", fake_fetch)
+    sync_service.STATE.record_success(
+        {"users": 2}, None, None, changed=True, now=time.time() - 100_000
+    )
+    await client.get("/api/v0/serial/A1B2C3D4/permission/tool_b?source=back_door&method=card_reader")
+    assert seen and seen[0].endswith("/permission/tool_b?source=back_door&method=card_reader")
+    assert _queued() == []

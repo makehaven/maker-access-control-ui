@@ -1773,8 +1773,43 @@ async def drupal_login_shim() -> Response:
     return response
 
 
+_CALLER_LABEL = re.compile(r"[^A-Za-z0-9_.:-]")
+LOCAL_BOX_NOTE = "Answered by local box"
+
+
+def _caller_label(name: str) -> str:
+    """Return a caller-supplied ``source``/``method`` label, cleaned for the log."""
+    return _CALLER_LABEL.sub("", str(request.args.get(name, "") or ""))[:64]
+
+
+def _forward_fields(default_method: str, note: str = "") -> Dict[str, str]:
+    """Log-forward fields for this request.
+
+    Callers say which device asked (``?source=front_door``) and how
+    (``?method=card_reader``), exactly as they do when asking Drupal, and the
+    access log shows those. Without them the box falls back to what it knows:
+    it answered (``local_authority``) and which lookup was used. Either way the
+    note records that the box, not Drupal, made the decision, so reports can
+    still tell the two apart.
+    """
+    return {
+        "source": _caller_label("source") or "local_authority",
+        "method": _caller_label("method") or default_method,
+        "note": f"{LOCAL_BOX_NOTE}. {note}".strip() if note else LOCAL_BOX_NOTE,
+    }
+
+
+def _caller_query() -> str:
+    """The caller's ``source``/``method`` as a query string for a proxied lookup."""
+    pairs = [(k, _caller_label(k)) for k in ("source", "method")]
+    kept = [f"{k}={quote(v)}" for k, v in pairs if v]
+    return ("?" + "&".join(kept)) if kept else ""
+
+
 async def _proxied(path: str, reason: str) -> Response | None:
     """Return Drupal's answer for ``path``, or ``None`` to keep the local one."""
+    if "/permission/" in path:
+        path += _caller_query()
     result = await proxy_service.maybe_proxy(path, reason)
     if result is None:
         return None
@@ -1915,7 +1950,7 @@ async def api_permission_by_serial(card_serial: str, permission_id: str) -> Resp
             member_uuid=person.get("uuid", ""),
             permission=permission_id,
             result=True,
-            method="card",
+            **_forward_fields("card"),
         )
         return _permission_response(person, permission_id, True)
     # A denial is only re-checked upstream when the snapshot is too old to be
@@ -1933,8 +1968,7 @@ async def api_permission_by_serial(card_serial: str, permission_id: str) -> Resp
         member_uuid=person.get("uuid", ""),
         permission=permission_id,
         result=False,
-        note="User does not have the specified permission.",
-        method="card",
+        **_forward_fields("card", "User does not have the specified permission."),
     )
     return _permission_response(person, permission_id, False)
 
@@ -1971,7 +2005,7 @@ async def api_permission_by_uuid(user_uuid: str, permission_id: str) -> Response
             member_uuid=person.get("uuid", ""),
             permission=permission_id,
             result=True,
-            method="uuid",
+            **_forward_fields("uuid"),
         )
         return _permission_response(person, permission_id, True)
     # A denial is only re-checked upstream when the snapshot is too old to be
@@ -1989,8 +2023,7 @@ async def api_permission_by_uuid(user_uuid: str, permission_id: str) -> Response
         member_uuid=person.get("uuid", ""),
         permission=permission_id,
         result=False,
-        note="User does not have the specified permission.",
-        method="uuid",
+        **_forward_fields("uuid", "User does not have the specified permission."),
     )
     return _permission_response(person, permission_id, False)
 
@@ -2027,7 +2060,7 @@ async def api_permission_by_email(email: str, permission_id: str) -> Response:
             member_uuid=person.get("uuid", ""),
             permission=permission_id,
             result=True,
-            method="email",
+            **_forward_fields("email"),
         )
         return _permission_response(person, permission_id, True)
     # A denial is only re-checked upstream when the snapshot is too old to be
@@ -2045,8 +2078,7 @@ async def api_permission_by_email(email: str, permission_id: str) -> Response:
         member_uuid=person.get("uuid", ""),
         permission=permission_id,
         result=False,
-        note="User does not have the specified permission.",
-        method="email",
+        **_forward_fields("email", "User does not have the specified permission."),
     )
     return _permission_response(person, permission_id, False)
 
