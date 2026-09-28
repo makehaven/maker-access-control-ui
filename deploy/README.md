@@ -5,7 +5,28 @@ snapshot of Drupal's membership, and asks Drupal only when the snapshot cannot
 answer honestly. It is designed so that the network being down degrades speed
 and freshness, never availability.
 
-## One-time setup on the Proxmox LXC
+## Rebuild after losing the box (the short path)
+
+Everything that is not in this repo is backed up nightly, encrypted, to the
+private repo `makehaven/infra-backups` (host `accessbox`; passphrase in the
+password manager, not in the repo). On a fresh Debian 12 VM, as root:
+
+```bash
+git clone https://github.com/makehaven/infra-backups && cd infra-backups
+gpg -d hosts/accessbox/accessbox.tar.gz.gpg | tar -xz        # → ./accessbox
+curl -fsSL https://raw.githubusercontent.com/makehaven/maker-access-control-ui/main/deploy/install.sh \
+  | bash -s -- "$PWD/accessbox"
+```
+
+`install.sh` restores the env (download + ingest codes), the Apache site and
+staff password, the Cloudflare tunnel token (UniFi Access API for the website),
+the unsent log-forward queue, and the `makehaven` crontab that runs **live
+CiviCRM's scheduled jobs** (Terminus must then be logged in as that user). The
+member store rebuilds itself from the website within one sync interval. If the
+new VM gets a different address, repoint cardsystem's three `.env` URLs; until
+then its fallback asks the website directly, so doors keep working.
+
+## One-time setup on the Proxmox LXC (manual equivalent of install.sh)
 
 ```bash
 adduser --system --group --home /opt/maker-access-control maker
