@@ -94,6 +94,9 @@ class Config:
     PROXY_BASE_URL: str = field(default="")
     PROXY_TIMEOUT_SECONDS: float = field(default=2.5)
     PROXY_CACHE_SECONDS: float = field(default=30.0)
+    # Device key the website expects in X-API-Key on /api/v0 lookups
+    # (MakeHaven SEC-001).  Empty sends nothing.
+    PROXY_API_KEY: str = field(default="")
 
     # Log-forward.  Nine Drupal modules read the access log; once this box
     # answers taps, this is the only thing keeping them fed.
@@ -183,6 +186,7 @@ def load_config() -> Config:
         PROXY_CACHE_SECONDS=_env_number(
             "MAKER_ACCESS_CONTROL_PROXY_CACHE_SECONDS", default=30.0
         ),
+        PROXY_API_KEY=os.environ.get("MAKER_ACCESS_CONTROL_PROXY_API_KEY", "").strip(),
         LOG_FORWARD_ENABLED=_env_flag(
             "MAKER_ACCESS_CONTROL_LOG_FORWARD_ENABLED", default=False
         ),
