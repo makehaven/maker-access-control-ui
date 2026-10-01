@@ -270,3 +270,62 @@ async def test_health_reports_proxy_activity(
     body = await (await client.get("/health")).get_json()
     assert body["proxy"]["answered"] == 1
     assert body["proxy"]["enabled"] is True
+
+
+# ----------------------------------------------------------------------
+# Device key (SEC-001)
+# ----------------------------------------------------------------------
+class _FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        return None
+
+    def getcode(self) -> int:
+        return 200
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_the_device_key_rides_the_proxy_request(
+    enabled: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict = {}
+
+    def fake_urlopen(request: Any, timeout: float = 0) -> _FakeResponse:
+        seen.update(dict(request.header_items()))
+        return _FakeResponse(b"[]")
+
+    monkeypatch.setattr(
+        proxy_service, "CONFIG", replace(proxy_service.CONFIG, PROXY_API_KEY="k" * 32)
+    )
+    monkeypatch.setattr(proxy_service, "urlopen", fake_urlopen)
+    proxy_service._fetch_sync("https://example.test/api/v0/serial/X/user", 1.0)
+    assert seen.get("X-api-key") == "k" * 32
+
+
+@pytest.mark.asyncio
+async def test_drupal_refusing_the_box_leaves_the_local_answer_standing(
+    enabled: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 401 is about this box's key, not the member: never pass it on."""
+    import io
+    from urllib.error import HTTPError
+
+    def refuse(request: Any, timeout: float = 0) -> Any:
+        raise HTTPError(
+            request.full_url, 401, "Unauthorized", {}, io.BytesIO(b'{"error": "API key required."}')
+        )
+
+    monkeypatch.setattr(proxy_service, "urlopen", refuse)
+    result = await proxy_service.maybe_proxy(
+        "/api/v0/serial/FEEDFACE/user", proxy_service.REASON_USER_NOT_FOUND
+    )
+    assert result is None
+    assert proxy_service.counters()["failures"] == 1
+

@@ -125,12 +125,22 @@ def _looks_like_an_answer(body: Any) -> bool:
 
 
 def _fetch_sync(url: str, timeout: float) -> Tuple[int, Any]:
-    request = Request(url, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json"}
+    if CONFIG.PROXY_API_KEY:
+        headers["X-API-Key"] = CONFIG.PROXY_API_KEY
+    request = Request(url, headers=headers)
     try:
         with urlopen(request, timeout=timeout) as response:
             status = int(response.getcode() or 0)
             raw = response.read()
     except HTTPError as error:
+        # A 401 is the website refusing this box (missing or stale key), not
+        # a verdict on the member: a failed proxy, so the local answer stands.
+        if int(error.code) == 401:
+            raise ValueError(
+                "Drupal refused this box (401): MAKER_ACCESS_CONTROL_PROXY_API_KEY "
+                "is missing or wrong."
+            ) from error
         # 403/404 from Drupal are real answers -- a denial is information.
         status = int(error.code)
         raw = error.read()
