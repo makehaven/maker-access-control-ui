@@ -82,6 +82,11 @@ def fetch_fallback_store_sync(
         request.add_header("X-Access-Control-Code", download_code)
     if etag:
         request.add_header("If-None-Match", etag)
+        # Pantheon's edge strips If-None-Match from requests it treats as
+        # cacheable, so without this every poll was a full rebuild and a
+        # 476KB download (216/day, 0 of them 304 - measured 2026-10-05).
+        # A NO_CACHE cookie makes the edge pass the request through untouched.
+        request.add_header("Cookie", "NO_CACHE=1")
 
     try:
         with urlopen(request, timeout=timeout) as response:

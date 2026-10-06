@@ -198,6 +198,28 @@ async def test_sync_sends_the_stored_etag_and_force_omits_it(
     assert seen == [None, '"etag-1"', None]
 
 
+def test_conditional_fetch_bypasses_the_pantheon_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the NO_CACHE cookie the edge drops If-None-Match and no poll is ever a 304."""
+    from urllib.error import HTTPError
+
+    sent: list[Any] = []
+
+    def fake_urlopen(request: Any, timeout: float) -> Any:
+        sent.append(request)
+        raise HTTPError(request.full_url, 304, "Not Modified", {}, None)
+
+    monkeypatch.setattr(sync_service, "urlopen", fake_urlopen)
+    result = sync_service.fetch_fallback_store_sync(
+        "https://example.org/export", "code", etag='W/"abc"'
+    )
+
+    assert result == (sync_service.UNCHANGED, 'W/"abc"')
+    assert sent[0].get_header("If-none-match") == 'W/"abc"'
+    assert sent[0].get_header("Cookie") == "NO_CACHE=1"
+
+
 # ----------------------------------------------------------------------
 # State persistence
 # ----------------------------------------------------------------------
