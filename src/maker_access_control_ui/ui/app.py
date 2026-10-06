@@ -26,6 +26,7 @@ from maker_access_control_ui.access.provider import AccessProvider
 from maker_access_control_ui.access.provider import get_provider
 from maker_access_control_ui.config import CONFIG
 from maker_access_control_ui import logforward as logforward_service
+from maker_access_control_ui import presence as presence_service
 from maker_access_control_ui import proxy as proxy_service
 from maker_access_control_ui import sync as sync_service
 
@@ -1777,6 +1778,15 @@ _CALLER_LABEL = re.compile(r"[^A-Za-z0-9_.:-]")
 LOCAL_BOX_NOTE = "Answered by local box"
 
 
+def _door_label(provider: AccessProvider, permission_id: str) -> str:
+    """What the presence board calls the reader, e.g. "Door" or "Laser Cutter"."""
+    finder = getattr(provider, "find_tool_by_badge", None)
+    tool = finder(permission_id) if callable(finder) else None
+    if tool and tool.get("name"):
+        return str(tool["name"])
+    return (permission_id or "").replace("_", " ").title()
+
+
 def _caller_label(name: str) -> str:
     """Return a caller-supplied ``source``/``method`` label, cleaned for the log."""
     return _CALLER_LABEL.sub("", str(request.args.get(name, "") or ""))[:64]
@@ -1946,6 +1956,7 @@ async def api_permission_by_serial(card_serial: str, permission_id: str) -> Resp
         return response
     granted = provider.has_permission(person["id"], permission_id)
     if granted:
+        presence_service.record_grant(person, _door_label(provider, permission_id))
         logforward_service.enqueue(
             member_uuid=person.get("uuid", ""),
             permission=permission_id,
@@ -2001,6 +2012,7 @@ async def api_permission_by_uuid(user_uuid: str, permission_id: str) -> Response
         return response
     granted = provider.has_permission(person["id"], permission_id)
     if granted:
+        presence_service.record_grant(person, _door_label(provider, permission_id))
         logforward_service.enqueue(
             member_uuid=person.get("uuid", ""),
             permission=permission_id,
@@ -2056,6 +2068,7 @@ async def api_permission_by_email(email: str, permission_id: str) -> Response:
         return response
     granted = provider.has_permission(person["id"], permission_id)
     if granted:
+        presence_service.record_grant(person, _door_label(provider, permission_id))
         logforward_service.enqueue(
             member_uuid=person.get("uuid", ""),
             permission=permission_id,
@@ -2091,6 +2104,145 @@ if __name__ == "__main__":
 # ----------------------------------------------------------------------
 # Background synchronisation lifecycle
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Lobby presence board (LAN). Screens poll here instead of Pantheon.
+# ----------------------------------------------------------------------
+_KIOSK_DIR = os.path.join(os.path.dirname(__file__), "kiosk")
+
+
+def _kiosk_asset(name: str) -> str:
+    try:
+        with open(os.path.join(_KIOSK_DIR, name), encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+PRESENCE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recent Entries</title>
+  <style>
+.kiosk { font-family: system-ui, sans-serif; background:#000; color:#fff; padding:16px; min-height:100vh; margin:0 }
+body { margin:0; background:#000 }
+.kiosk h1 { margin:0 0 12px; font-size:28px; color:#cfcfcf }
+.k-grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:16px }
+.k-card { background:#111; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,.35); overflow:hidden; display:flex; flex-direction:column }
+.k-photo { width:100%; height:420px; object-fit:cover; display:block; background:#222 }
+.k-name { font-weight:700; font-size:22px; padding:10px 12px 0 12px }
+.k-meta { opacity:.95; font-size:20px; padding:6px 12px 6px 12px; color:#dcdcdc; border-top:1px solid rgba(255,255,255,.06) }
+.k-guests { font-size:20px; padding:6px 12px 12px 12px; color:#fff; background:rgba(255,255,255,.08); font-weight:600 }
+@media (max-width:1200px){ .k-grid{ grid-template-columns: repeat(3,1fr) } }
+@media (max-width:900px){ .k-grid{ grid-template-columns: repeat(2,1fr) } }
+@media (max-width:600px){ .k-grid{ grid-template-columns: repeat(1,1fr) } }
+.k-photo { height: clamp(160px, 30vh, 420px) }
+{{ kiosk_css }}
+  </style>
+</head>
+<body>
+  <main class="kiosk"><h1>Recent Entries</h1><div id="kiosk-grid" class="k-grid"></div></main>
+  <script>
+  (function () {
+    const FEED = '/api/presence';
+    const GRID = document.getElementById('kiosk-grid');
+    let lastSeen = 0;
+
+    function card(it) {
+      const d = new Date(it.last * 1000).toLocaleString([], {hour:'2-digit', minute:'2-digit', timeZone: 'America/New_York'});
+      const el = document.createElement('article');
+      el.id = `k-card-${it.uid}`;
+      el.className = 'k-card';
+      if (it.photo) {
+        const img = document.createElement('img');
+        img.className = 'k-photo';
+        img.alt = it.name;
+        img.src = it.photo;
+        el.appendChild(img);
+      }
+      const name = document.createElement('div');
+      name.className = 'k-name';
+      name.textContent = it.name;
+      const meta = document.createElement('div');
+      meta.className = 'k-meta';
+      meta.textContent = `${it.door} \u2014 ${d}${it.count > 1 ? ` (x${it.count})` : ''}`;
+      el.appendChild(name);
+      el.appendChild(meta);
+      if (it.guest_count && it.guest_count > 0) {
+        const guests = document.createElement('div');
+        guests.className = 'k-guests';
+        guests.textContent = `+ ${it.guest_count} guest${it.guest_count === 1 ? '' : 's'}`;
+        el.appendChild(guests);
+      }
+      return el;
+    }
+
+    window.__presenceFeedUrl = function () {
+      return lastSeen ? `${FEED}?after=${lastSeen}&limit=24` : `${FEED}?limit=24`;
+    };
+    window.__presenceRender = function (data) {
+      for (const it of (data.items || [])) {
+        document.getElementById(`k-card-${it.uid}`)?.remove();
+        GRID.prepend(card(it));
+        lastSeen = Math.max(lastSeen, it.last);
+      }
+      while (GRID.children.length > 24) GRID.removeChild(GRID.lastChild);
+    };
+  })();
+  </script>
+  <script>{{ kiosk_js }}
+  MakerspaceKiosk.start({
+    screenId: 'faces-box',
+    // LAN polls cost the website nothing, so the board can be livelier than
+    // the 30 s the Pantheon-served version is held to.
+    intervalMs: 10000,
+    statusChipPosition: 'bottom-right',
+    feedUrl: function () { return window.__presenceFeedUrl(); },
+    onData: function (data) { window.__presenceRender(data); }
+  });
+  </script>
+</body>
+</html>
+"""
+
+
+@app.get("/display/presence")
+async def presence_page() -> str:
+    """The lobby "Recent Entries" board, served from the LAN."""
+    return await render_template_string(
+        PRESENCE_HTML,
+        kiosk_css=Markup(_kiosk_asset("kiosk-status.css")),
+        kiosk_js=Markup(_kiosk_asset("kiosk-resilience.js")),
+    )
+
+
+@app.get("/api/presence")
+async def presence_feed() -> Response:
+    """Recent presence, same shape as Drupal's /access-display/presence feed."""
+    try:
+        after = int(request.args.get("after", 0) or 0)
+        limit = int(request.args.get("limit", 24) or 24)
+    except ValueError:
+        after, limit = 0, 24
+    response = jsonify(presence_service.feed(after=after, limit=limit))
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
+@app.get("/display/photo/<person_id>")
+async def presence_photo(person_id: str) -> Response:
+    """A board photo, downloaded from the website once and then served locally."""
+    source = presence_service.photo_source(person_id)
+    found = await asyncio.to_thread(presence_service.cached_photo, source) if source else None
+    if not found:
+        return Response("", status=HTTPStatus.NOT_FOUND)
+    body, content_type = found
+    response = Response(body, content_type=content_type)
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
 @app.before_serving
 async def _start_sync() -> None:
     """Restore sync state and, when enabled, start the unattended loop."""

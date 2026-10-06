@@ -1,0 +1,105 @@
+/* Vendored from makehaven/makerspace_kiosk (91cf902). Keep in step with the website copy; do not edit here. */
+/**
+ * Corner status chip for unattended displays.
+ *
+ * Deliberately small and low-contrast while healthy - it is diagnostic
+ * furniture, not content, and these screens are read from across a room. It
+ * only earns attention when it goes stale, at which point it is the most
+ * important thing on the board.
+ *
+ * Sized in vmin rather than px because these displays run at wildly different
+ * resolutions and viewing distances, from a 1080p tasks board a metre away to
+ * the Chapel Street window seen from the sidewalk.
+ */
+.mk-status {
+  position: fixed;
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  gap: 0.7vmin;
+  padding: 0.6vmin 1.1vmin;
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.6vmin;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+  transition: background 0.4s ease, color 0.4s ease;
+}
+
+.mk-status--bottom-right { right: 1.2vmin; bottom: 1.2vmin; }
+.mk-status--bottom-left  { left: 1.2vmin;  bottom: 1.2vmin; }
+.mk-status--top-right    { right: 1.2vmin; top: 1.2vmin; }
+.mk-status--top-left     { left: 1.2vmin;  top: 1.2vmin; }
+
+.mk-status__dot {
+  width: 1.1vmin;
+  height: 1.1vmin;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.mk-status__age { opacity: 0.75; }
+
+.mk-status.is-ok { color: rgba(150, 230, 170, 0.8); }
+
+.mk-status.is-connecting {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.mk-status.is-connecting .mk-status__dot {
+  animation: mk-status-pulse 1.4s ease-in-out infinite;
+}
+
+/**
+ * Stale is the one state that must survive a glance from the far side of the
+ * room, because the whole point is that a frozen board otherwise looks healthy.
+ * Full opacity, warning colour, and a pulsing dot.
+ */
+.mk-status.is-stale {
+  color: #fff;
+  background: rgba(176, 32, 32, 0.96);
+  /* Deliberately much larger than the healthy chip. A subtle indicator that
+     nobody reads from across the room is the same as no indicator at all, and
+     silent staleness is the failure this module exists to end. */
+  font-size: 3.2vmin;
+  font-weight: 700;
+  padding: 1.2vmin 2vmin;
+  gap: 1.2vmin;
+  box-shadow: 0 0 0 0.4vmin rgba(176, 32, 32, 0.35);
+}
+
+.mk-status.is-stale .mk-status__dot {
+  width: 1.8vmin;
+  height: 1.8vmin;
+}
+
+.mk-status.is-stale .mk-status__age { opacity: 1; }
+
+.mk-status.is-stale .mk-status__dot {
+  animation: mk-status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes mk-status-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+/* A sign nobody can interact with has no use for motion preferences, but a
+   staff member previewing one on a laptop might. */
+@media (prefers-reduced-motion: reduce) {
+  .mk-status__dot { animation: none !important; }
+}
+
+/* Light-background kiosks (the sponsor grid, the facilitator board) need the
+   chip to stay legible against white. */
+.mk-status--on-light {
+  color: rgba(0, 0, 0, 0.6);
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.mk-status--on-light.is-ok { color: rgba(20, 110, 50, 0.85); }

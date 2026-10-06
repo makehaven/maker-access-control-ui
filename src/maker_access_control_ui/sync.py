@@ -371,6 +371,14 @@ async def run_sync_once(force: bool = False) -> Dict[str, Any]:
         logger.exception("Fallback sync import failed")
         return {"status": "error", "error": message}
 
+    # Guest check-ins only exist on the website; they ride the export so the
+    # lobby board (served from this box) can show them. Absent on an older
+    # Drupal, in which case the board simply has no guests.
+    if "guest_checkins" in payload:
+        from maker_access_control_ui import presence as presence_service
+
+        presence_service.set_guest_checkins(payload.get("guest_checkins"))
+
     generated_at = payload.get("generated_at")
     STATE.record_success(
         summary,
