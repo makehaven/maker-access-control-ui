@@ -2163,9 +2163,11 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
    cropped the face (JR 11-13). */
 /* One line per card: name, then the time small on the right. Every tap here is
    a door, so the board no longer says "Door" (JR 11-13). */
-.k-row { display:flex; align-items:baseline; gap:1vmin; padding:0.8vmin 1vmin }
-.k-name { flex:1 1 auto; min-width:0; font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.15; white-space:nowrap; overflow:hidden }
-.k-time { flex:0 0 auto; font-size:clamp(12px, 1.8vmin, 24px); color:#bdbdbd; white-space:nowrap }
+.k-row { display:flex; align-items:flex-start; gap:1vmin; padding:0.8vmin 1vmin }
+/* Names get two lines on every card (the same height everywhere, so photos stay
+   equal); a name too long even for two lines shrinks to fit. */
+.k-name { flex:1 1 auto; min-width:0; font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.15; height:2.3em; overflow:hidden; overflow-wrap:anywhere }
+.k-time { flex:0 0 auto; font-size:clamp(12px, 1.8vmin, 24px); color:#bdbdbd; white-space:nowrap; padding-top:0.6vmin }
 .k-meta { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#dcdcdc }
 .k-guests { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#fff; background:rgba(255,255,255,.08); font-weight:600 }
 {{ kiosk_css }}
@@ -2217,7 +2219,7 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
       const cols = parseInt(cs.getPropertyValue('--cols'), 10) || 3;
       const vmin = Math.min(window.innerWidth, window.innerHeight) / 100;
       const colW = GRID.clientWidth / cols;
-      const rows = Math.max(1, Math.round(GRID.clientHeight / (colW * 0.95 + 5 * vmin)));
+      const rows = Math.max(1, Math.round(GRID.clientHeight / (colW * 0.95 + 8.5 * vmin)));
       document.documentElement.style.setProperty('--rows', rows);
       Array.from(GRID.children).forEach(function (el, i) {
         el.classList.toggle('k-off', i >= cols * rows);
@@ -2228,7 +2230,7 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
         el.style.fontSize = '';
         const base = parseFloat(getComputedStyle(el).fontSize);
         let size = base;
-        while (el.scrollWidth > el.clientWidth && size > base * 0.55) {
+        while (el.scrollHeight > el.clientHeight + 1 && size > base * 0.55) {
           size -= 1;
           el.style.fontSize = size + 'px';
         }
