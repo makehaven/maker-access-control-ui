@@ -2157,7 +2157,7 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
 .k-grid { display:grid; height:100%; grid-template-columns: repeat(var(--cols), minmax(0,1fr)); grid-template-rows: repeat(var(--rows), minmax(0,1fr)); gap:1.2vmin }
 .k-grid > .k-card.k-off { display:none }
 .k-card { background:#111; border-radius:1.2vmin; overflow:hidden; display:flex; flex-direction:column; min-height:0 }
-.k-photo { width:100%; flex:1 1 auto; min-height:0; object-fit:cover; object-position:50% 30%; display:block; background:#222 }
+.k-photo { width:100%; flex:1 1 auto; min-height:0; object-fit:cover; object-position:50% 20%; display:block; background:#222 }
 /* Full names on one line: a long name shrinks to fit (fitNames) instead of
    wrapping, because a second line stole height from that card's photo and
    cropped the face (JR 11-13). */
