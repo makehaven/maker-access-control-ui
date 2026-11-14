@@ -2151,9 +2151,13 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
    only six people there (JR 11-13). */
 :root { --cols: 6 }
 @media (orientation: portrait) { :root { --cols: 3 } }
-.k-grid { display:grid; grid-template-columns: repeat(var(--cols), minmax(0,1fr)); gap:1.2vmin }
-.k-card { background:#111; border-radius:1.2vmin; overflow:hidden; display:flex; flex-direction:column }
-.k-photo { width:100%; aspect-ratio:5 / 4; height:auto; object-fit:cover; object-position:50% 30%; display:block; background:#222 }
+/* Rows fill the screen exactly (no black bar on any resolution): JS sets --rows
+   to however many fit and the photos stretch to use the height. */
+:root { --rows: 5 }
+.k-grid { display:grid; height:100%; grid-template-columns: repeat(var(--cols), minmax(0,1fr)); grid-template-rows: repeat(var(--rows), minmax(0,1fr)); gap:1.2vmin }
+.k-grid > .k-card.k-off { display:none }
+.k-card { background:#111; border-radius:1.2vmin; overflow:hidden; display:flex; flex-direction:column; min-height:0 }
+.k-photo { width:100%; flex:1 1 auto; min-height:0; object-fit:cover; object-position:50% 30%; display:block; background:#222 }
 /* Full names: wrap to a second line rather than cut off (JR 11-13). */
 .k-name { font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.1; padding:0.8vmin 1vmin 0; overflow-wrap:anywhere }
 .k-meta { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#dcdcdc }
@@ -2198,6 +2202,20 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
       return el;
     }
 
+    // How many rows fit: a card is about a 5:4 photo plus its name lines.
+    function fit() {
+      const cs = getComputedStyle(document.documentElement);
+      const cols = parseInt(cs.getPropertyValue('--cols'), 10) || 3;
+      const vmin = Math.min(window.innerWidth, window.innerHeight) / 100;
+      const colW = GRID.clientWidth / cols;
+      const rows = Math.max(1, Math.round(GRID.clientHeight / (colW * 0.8 + 8 * vmin)));
+      document.documentElement.style.setProperty('--rows', rows);
+      Array.from(GRID.children).forEach(function (el, i) {
+        el.classList.toggle('k-off', i >= cols * rows);
+      });
+    }
+    window.addEventListener('resize', fit);
+
     window.__presenceFeedUrl = function () {
       return lastSeen ? `${FEED}?after=${lastSeen}&limit=24` : `${FEED}?limit=24`;
     };
@@ -2208,10 +2226,7 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
         lastSeen = Math.max(lastSeen, it.last);
       }
       while (GRID.children.length > 24) GRID.removeChild(GRID.lastChild);
-      // Hide a partly visible bottom row rather than show half a face.
-      for (const el of GRID.children) {
-        el.style.visibility = el.getBoundingClientRect().bottom <= window.innerHeight ? '' : 'hidden';
-      }
+      fit();
     };
   })();
   </script>
