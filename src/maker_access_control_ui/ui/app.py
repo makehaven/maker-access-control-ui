@@ -2257,7 +2257,8 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
     // LAN polls cost the website nothing, so the board can be livelier than
     // the 30 s the Pantheon-served version is held to.
     intervalMs: 10000,
-    statusChipPosition: 'bottom-right',
+    // Top-right sits on a photo's corner; bottom-right covered the last name.
+    statusChipPosition: 'top-right',
     feedUrl: function () { return window.__presenceFeedUrl(); },
     onData: function (data) { window.__presenceRender(data); }
   });
