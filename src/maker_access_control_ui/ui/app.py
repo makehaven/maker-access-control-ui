@@ -2164,9 +2164,11 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
 /* One line per card: name, then the time small on the right. Every tap here is
    a door, so the board no longer says "Door" (JR 11-13). */
 .k-row { display:flex; align-items:flex-start; gap:1vmin; padding:0.8vmin 1vmin }
-/* Names get two lines on every card (the same height everywhere, so photos stay
-   equal); a name too long even for two lines shrinks to fit. */
-.k-name { flex:1 1 auto; min-width:0; font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.15; height:2.3em; overflow:hidden; overflow-wrap:anywhere }
+/* Name on two lines on every card: last word on the second line, the rest on
+   the first (JR 11-13). Same height everywhere, so photos stay equal; a line
+   too wide for the card shrinks the name to fit. */
+.k-name { flex:1 1 auto; min-width:0; font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.15 }
+.k-name > span { display:block; white-space:nowrap; overflow:hidden; min-height:1.15em }
 .k-time { flex:0 0 auto; font-size:clamp(12px, 1.8vmin, 24px); color:#bdbdbd; white-space:nowrap; padding-top:0.6vmin }
 .k-meta { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#dcdcdc }
 .k-guests { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#fff; background:rgba(255,255,255,.08); font-weight:600 }
@@ -2197,7 +2199,13 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
       row.className = 'k-row';
       const name = document.createElement('div');
       name.className = 'k-name';
-      name.textContent = it.name;
+      const words = String(it.name || '').trim().split(/\s+/);
+      const last = words.length > 1 ? words.pop() : '';
+      for (const text of [words.join(' '), last]) {
+        const line = document.createElement('span');
+        line.textContent = text;
+        name.appendChild(line);
+      }
       const time = document.createElement('div');
       time.className = 'k-time';
       time.textContent = d;
@@ -2230,7 +2238,10 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
         el.style.fontSize = '';
         const base = parseFloat(getComputedStyle(el).fontSize);
         let size = base;
-        while (el.scrollHeight > el.clientHeight + 1 && size > base * 0.55) {
+        const tooWide = function () {
+          return Array.from(el.children).some(function (line) { return line.scrollWidth > line.clientWidth; });
+        };
+        while (tooWide() && size > base * 0.55) {
           size -= 1;
           el.style.fontSize = size + 'px';
         }
