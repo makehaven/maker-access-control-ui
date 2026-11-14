@@ -2211,13 +2211,13 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
       return el;
     }
 
-    // How many rows fit: a card is about a 5:4 photo plus its name lines.
+    // How many rows fit: a card is about a square photo plus its name line.
     function fit() {
       const cs = getComputedStyle(document.documentElement);
       const cols = parseInt(cs.getPropertyValue('--cols'), 10) || 3;
       const vmin = Math.min(window.innerWidth, window.innerHeight) / 100;
       const colW = GRID.clientWidth / cols;
-      const rows = Math.max(1, Math.round(GRID.clientHeight / (colW * 0.8 + 5 * vmin)));
+      const rows = Math.max(1, Math.round(GRID.clientHeight / (colW * 0.95 + 5 * vmin)));
       document.documentElement.style.setProperty('--rows', rows);
       Array.from(GRID.children).forEach(function (el, i) {
         el.classList.toggle('k-off', i >= cols * rows);
