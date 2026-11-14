@@ -94,7 +94,9 @@ def test_guests_get_a_card_and_count_on_their_hosts_card() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_granted_tap_reaches_the_board(client: Any) -> None:
+async def test_a_granted_tap_reaches_the_board(client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Treat tool_a as a door here; the fixture store has no door permission.
+    monkeypatch.setenv("CARDSYS_PRESENCE_PERMISSIONS", "door,tool_a")
     res = await client.get("/api/v0/serial/01020304/permission/tool_a")
     assert res.status_code == 200
     feed = await (await client.get("/api/presence")).get_json()
@@ -133,3 +135,12 @@ async def test_sync_installs_guest_checkins(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(sync_service, "fetch_fallback_store", fake_fetch)
     await sync_service.run_sync_once(force=True)
     assert [i["name"] for i in presence.feed(now=10**10)["items"]] == ["Gina"]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_reader_tap_stays_off_the_lobby_board(client: Any) -> None:
+    """The lobby board shows people arriving, not people using the table saw (JR 11-13)."""
+    res = await client.get("/api/v0/serial/01020304/permission/tool_a")
+    assert res.status_code == 200
+    feed = await (await client.get("/api/presence")).get_json()
+    assert feed["items"] == []

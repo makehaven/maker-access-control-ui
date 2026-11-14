@@ -1787,6 +1787,25 @@ def _door_label(provider: AccessProvider, permission_id: str) -> str:
     return (permission_id or "").replace("_", " ").title()
 
 
+def _presence_permissions() -> set:
+    """Permissions whose taps mean someone arrived; ``door`` covers building and space doors."""
+    raw = os.getenv("CARDSYS_PRESENCE_PERMISSIONS", "door")
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
+def _record_presence(provider: AccessProvider, person: Dict[str, Any], permission_id: str) -> None:
+    """Put a granted tap on the lobby board if it was a door, not a tool.
+
+    The lobby board answers "who just came in" (JR 11-13). A tap on the table
+    saw is not someone arriving, and on a busy night tool taps pushed arrivals
+    off the screen. The door is itself a "tool" in the synced store (badge
+    ``door``), so this keys on the permission, not on whether a tool matched.
+    """
+    if (permission_id or "").lower() not in _presence_permissions():
+        return
+    presence_service.record_grant(person, _door_label(provider, permission_id))
+
+
 def _caller_label(name: str) -> str:
     """Return a caller-supplied ``source``/``method`` label, cleaned for the log."""
     return _CALLER_LABEL.sub("", str(request.args.get(name, "") or ""))[:64]
@@ -1956,7 +1975,7 @@ async def api_permission_by_serial(card_serial: str, permission_id: str) -> Resp
         return response
     granted = provider.has_permission(person["id"], permission_id)
     if granted:
-        presence_service.record_grant(person, _door_label(provider, permission_id))
+        _record_presence(provider, person, permission_id)
         logforward_service.enqueue(
             member_uuid=person.get("uuid", ""),
             permission=permission_id,
@@ -2012,7 +2031,7 @@ async def api_permission_by_uuid(user_uuid: str, permission_id: str) -> Response
         return response
     granted = provider.has_permission(person["id"], permission_id)
     if granted:
-        presence_service.record_grant(person, _door_label(provider, permission_id))
+        _record_presence(provider, person, permission_id)
         logforward_service.enqueue(
             member_uuid=person.get("uuid", ""),
             permission=permission_id,
@@ -2068,7 +2087,7 @@ async def api_permission_by_email(email: str, permission_id: str) -> Response:
         return response
     granted = provider.has_permission(person["id"], permission_id)
     if granted:
-        presence_service.record_grant(person, _door_label(provider, permission_id))
+        _record_presence(provider, person, permission_id)
         logforward_service.enqueue(
             member_uuid=person.get("uuid", ""),
             permission=permission_id,
@@ -2125,19 +2144,20 @@ PRESENCE_HTML = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Recent Entries</title>
   <style>
-.kiosk { font-family: system-ui, sans-serif; background:#000; color:#fff; padding:16px; min-height:100vh; margin:0 }
+.kiosk { font-family: system-ui, sans-serif; background:#000; color:#fff; padding:1.5vmin; height:100vh; box-sizing:border-box; overflow:hidden; margin:0 }
 body { margin:0; background:#000 }
-.kiosk h1 { margin:0 0 12px; font-size:28px; color:#cfcfcf }
-.k-grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:16px }
-.k-card { background:#111; border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,.35); overflow:hidden; display:flex; flex-direction:column }
-.k-photo { width:100%; height:420px; object-fit:cover; display:block; background:#222 }
-.k-name { font-weight:700; font-size:22px; padding:10px 12px 0 12px }
-.k-meta { opacity:.95; font-size:20px; padding:6px 12px 6px 12px; color:#dcdcdc; border-top:1px solid rgba(255,255,255,.06) }
-.k-guests { font-size:20px; padding:6px 12px 12px 12px; color:#fff; background:rgba(255,255,255,.08); font-weight:600 }
-@media (max-width:1200px){ .k-grid{ grid-template-columns: repeat(3,1fr) } }
-@media (max-width:900px){ .k-grid{ grid-template-columns: repeat(2,1fr) } }
-@media (max-width:600px){ .k-grid{ grid-template-columns: repeat(1,1fr) } }
-.k-photo { height: clamp(160px, 30vh, 420px) }
+.kiosk h1 { margin:0 0 1.2vmin; font-size:clamp(20px, 3vmin, 40px); color:#cfcfcf }
+/* Fit the screen, portrait or landscape: square photos, as many as fit. The
+   lobby screen is mounted portrait; the old 3-column, 420px-photo layout showed
+   only six people there (JR 11-13). */
+:root { --cols: 6 }
+@media (orientation: portrait) { :root { --cols: 4 } }
+.k-grid { display:grid; grid-template-columns: repeat(var(--cols), minmax(0,1fr)); gap:1.2vmin }
+.k-card { background:#111; border-radius:1.2vmin; overflow:hidden; display:flex; flex-direction:column }
+.k-photo { width:100%; aspect-ratio:1 / 1; height:auto; object-fit:cover; display:block; background:#222 }
+.k-name { font-weight:700; font-size:clamp(14px, 2.1vmin, 30px); padding:0.8vmin 1vmin 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.k-meta { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#dcdcdc }
+.k-guests { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#fff; background:rgba(255,255,255,.08); font-weight:600 }
 {{ kiosk_css }}
   </style>
 </head>
