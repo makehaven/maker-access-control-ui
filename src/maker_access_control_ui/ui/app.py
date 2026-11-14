@@ -2146,11 +2146,11 @@ PRESENCE_HTML = """<!DOCTYPE html>
   <style>
 .kiosk { font-family: system-ui, sans-serif; background:#000; color:#fff; padding:1.5vmin; height:100vh; box-sizing:border-box; overflow:hidden; margin:0 }
 html, body { margin:0; background:#000; overflow:hidden; cursor:none }
-/* Fit the screen, portrait or landscape: square photos, as many as fit. The
+/* Fit the screen, portrait or landscape: photos, as many as fit; 3 across portrait (JR 11-13). The
    lobby screen is mounted portrait; the old 3-column, 420px-photo layout showed
    only six people there (JR 11-13). */
 :root { --cols: 6 }
-@media (orientation: portrait) { :root { --cols: 4 } }
+@media (orientation: portrait) { :root { --cols: 3 } }
 .k-grid { display:grid; grid-template-columns: repeat(var(--cols), minmax(0,1fr)); gap:1.2vmin }
 .k-card { background:#111; border-radius:1.2vmin; overflow:hidden; display:flex; flex-direction:column }
 .k-photo { width:100%; aspect-ratio:5 / 4; height:auto; object-fit:cover; object-position:50% 30%; display:block; background:#222 }
