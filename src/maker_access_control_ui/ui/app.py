@@ -2158,8 +2158,10 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
 .k-grid > .k-card.k-off { display:none }
 .k-card { background:#111; border-radius:1.2vmin; overflow:hidden; display:flex; flex-direction:column; min-height:0 }
 .k-photo { width:100%; flex:1 1 auto; min-height:0; object-fit:cover; object-position:50% 30%; display:block; background:#222 }
-/* Full names: wrap to a second line rather than cut off (JR 11-13). */
-.k-name { font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.1; padding:0.8vmin 1vmin 0; overflow-wrap:anywhere }
+/* Full names on one line: a long name shrinks to fit (fitNames) instead of
+   wrapping, because a second line stole height from that card's photo and
+   cropped the face (JR 11-13). */
+.k-name { font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.15; padding:0.8vmin 1vmin 0; white-space:nowrap; overflow:hidden }
 .k-meta { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#dcdcdc }
 .k-guests { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#fff; background:rgba(255,255,255,.08); font-weight:600 }
 {{ kiosk_css }}
@@ -2214,7 +2216,18 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
         el.classList.toggle('k-off', i >= cols * rows);
       });
     }
-    window.addEventListener('resize', fit);
+    function fitNames() {
+      for (const el of GRID.querySelectorAll('.k-name')) {
+        el.style.fontSize = '';
+        const base = parseFloat(getComputedStyle(el).fontSize);
+        let size = base;
+        while (el.scrollWidth > el.clientWidth && size > base * 0.55) {
+          size -= 1;
+          el.style.fontSize = size + 'px';
+        }
+      }
+    }
+    window.addEventListener('resize', function () { fit(); fitNames(); });
 
     window.__presenceFeedUrl = function () {
       return lastSeen ? `${FEED}?after=${lastSeen}&limit=24` : `${FEED}?limit=24`;
@@ -2227,6 +2240,7 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
       }
       while (GRID.children.length > 24) GRID.removeChild(GRID.lastChild);
       fit();
+      fitNames();
     };
   })();
   </script>
