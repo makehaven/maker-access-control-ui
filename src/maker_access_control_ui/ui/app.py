@@ -2145,8 +2145,7 @@ PRESENCE_HTML = """<!DOCTYPE html>
   <title>Recent Entries</title>
   <style>
 .kiosk { font-family: system-ui, sans-serif; background:#000; color:#fff; padding:1.5vmin; height:100vh; box-sizing:border-box; overflow:hidden; margin:0 }
-body { margin:0; background:#000 }
-.kiosk h1 { margin:0 0 1.2vmin; font-size:clamp(20px, 3vmin, 40px); color:#cfcfcf }
+html, body { margin:0; background:#000; overflow:hidden; cursor:none }
 /* Fit the screen, portrait or landscape: square photos, as many as fit. The
    lobby screen is mounted portrait; the old 3-column, 420px-photo layout showed
    only six people there (JR 11-13). */
@@ -2155,14 +2154,15 @@ body { margin:0; background:#000 }
 .k-grid { display:grid; grid-template-columns: repeat(var(--cols), minmax(0,1fr)); gap:1.2vmin }
 .k-card { background:#111; border-radius:1.2vmin; overflow:hidden; display:flex; flex-direction:column }
 .k-photo { width:100%; aspect-ratio:1 / 1; height:auto; object-fit:cover; display:block; background:#222 }
-.k-name { font-weight:700; font-size:clamp(14px, 2.1vmin, 30px); padding:0.8vmin 1vmin 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+/* Full names: wrap to a second line rather than cut off (JR 11-13). */
+.k-name { font-weight:700; font-size:clamp(14px, 2.1vmin, 30px); line-height:1.15; padding:0.8vmin 1vmin 0; overflow-wrap:anywhere }
 .k-meta { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#dcdcdc }
 .k-guests { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#fff; background:rgba(255,255,255,.08); font-weight:600 }
 {{ kiosk_css }}
   </style>
 </head>
 <body>
-  <main class="kiosk"><h1>Recent Entries</h1><div id="kiosk-grid" class="k-grid"></div></main>
+  <main class="kiosk"><div id="kiosk-grid" class="k-grid" aria-label="Recent entries"></div></main>
   <script>
   (function () {
     const FEED = '/api/presence';
@@ -2208,6 +2208,10 @@ body { margin:0; background:#000 }
         lastSeen = Math.max(lastSeen, it.last);
       }
       while (GRID.children.length > 24) GRID.removeChild(GRID.lastChild);
+      // Hide a partly visible bottom row rather than show half a face.
+      for (const el of GRID.children) {
+        el.style.visibility = el.getBoundingClientRect().bottom <= window.innerHeight ? '' : 'hidden';
+      }
     };
   })();
   </script>
