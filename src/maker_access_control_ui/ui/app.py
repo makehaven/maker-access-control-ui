@@ -2161,7 +2161,11 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
 /* Full names on one line: a long name shrinks to fit (fitNames) instead of
    wrapping, because a second line stole height from that card's photo and
    cropped the face (JR 11-13). */
-.k-name { font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.15; padding:0.8vmin 1vmin 0; white-space:nowrap; overflow:hidden }
+/* One line per card: name, then the time small on the right. Every tap here is
+   a door, so the board no longer says "Door" (JR 11-13). */
+.k-row { display:flex; align-items:baseline; gap:1vmin; padding:0.8vmin 1vmin }
+.k-name { flex:1 1 auto; min-width:0; font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.15; white-space:nowrap; overflow:hidden }
+.k-time { flex:0 0 auto; font-size:clamp(12px, 1.8vmin, 24px); color:#bdbdbd; white-space:nowrap }
 .k-meta { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#dcdcdc }
 .k-guests { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#fff; background:rgba(255,255,255,.08); font-weight:600 }
 {{ kiosk_css }}
@@ -2176,7 +2180,7 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
     let lastSeen = 0;
 
     function card(it) {
-      const d = new Date(it.last * 1000).toLocaleString([], {hour:'2-digit', minute:'2-digit', timeZone: 'America/New_York'});
+      const d = new Date(it.last * 1000).toLocaleString([], {hour:'numeric', minute:'2-digit', timeZone: 'America/New_York'});
       const el = document.createElement('article');
       el.id = `k-card-${it.uid}`;
       el.className = 'k-card';
@@ -2187,14 +2191,17 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
         img.src = it.photo;
         el.appendChild(img);
       }
+      const row = document.createElement('div');
+      row.className = 'k-row';
       const name = document.createElement('div');
       name.className = 'k-name';
       name.textContent = it.name;
-      const meta = document.createElement('div');
-      meta.className = 'k-meta';
-      meta.textContent = `${it.door} \u2014 ${d}${it.count > 1 ? ` (x${it.count})` : ''}`;
-      el.appendChild(name);
-      el.appendChild(meta);
+      const time = document.createElement('div');
+      time.className = 'k-time';
+      time.textContent = d;
+      row.appendChild(name);
+      row.appendChild(time);
+      el.appendChild(row);
       if (it.guest_count && it.guest_count > 0) {
         const guests = document.createElement('div');
         guests.className = 'k-guests';
@@ -2210,7 +2217,7 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
       const cols = parseInt(cs.getPropertyValue('--cols'), 10) || 3;
       const vmin = Math.min(window.innerWidth, window.innerHeight) / 100;
       const colW = GRID.clientWidth / cols;
-      const rows = Math.max(1, Math.round(GRID.clientHeight / (colW * 0.8 + 8 * vmin)));
+      const rows = Math.max(1, Math.round(GRID.clientHeight / (colW * 0.8 + 5 * vmin)));
       document.documentElement.style.setProperty('--rows', rows);
       Array.from(GRID.children).forEach(function (el, i) {
         el.classList.toggle('k-off', i >= cols * rows);
