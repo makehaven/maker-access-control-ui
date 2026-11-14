@@ -2155,7 +2155,7 @@ html, body { margin:0; background:#000; overflow:hidden; cursor:none }
 .k-card { background:#111; border-radius:1.2vmin; overflow:hidden; display:flex; flex-direction:column }
 .k-photo { width:100%; aspect-ratio:1 / 1; height:auto; object-fit:cover; display:block; background:#222 }
 /* Full names: wrap to a second line rather than cut off (JR 11-13). */
-.k-name { font-weight:700; font-size:clamp(14px, 2.1vmin, 30px); line-height:1.15; padding:0.8vmin 1vmin 0; overflow-wrap:anywhere }
+.k-name { font-weight:700; font-size:clamp(16px, 3vmin, 40px); line-height:1.1; padding:0.8vmin 1vmin 0; overflow-wrap:anywhere }
 .k-meta { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#dcdcdc }
 .k-guests { font-size:clamp(12px, 1.7vmin, 24px); padding:0.4vmin 1vmin 0.8vmin; color:#fff; background:rgba(255,255,255,.08); font-weight:600 }
 {{ kiosk_css }}
